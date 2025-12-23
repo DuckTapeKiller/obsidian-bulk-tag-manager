@@ -44,3 +44,7 @@ Use this feature to correct typos or apply rebranding consistently across the en
    - `main.js`
    - `manifest.json`
 4. Reload Obsidian and enable **Bulk Tag Manager** in the community plugins settings.
+
+A note on safety:
+
+Please be extremely cautious. Changes made to your tags are permanent and cannot be automatically reverted. While I have tested the plugin thoroughly and encountered no issues, you should back up your vault before use. I am sharing this plugin in good faith, but I cannot be held responsible for any issues resulting from its use.
