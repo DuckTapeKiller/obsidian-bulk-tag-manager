@@ -48,3 +48,5 @@ Use this feature to correct typos or apply rebranding consistently across the en
 A note on safety:
 
 Please be extremely cautious. Changes made to your tags are permanent and cannot be automatically reverted. While I have tested the plugin thoroughly and encountered no issues, you should back up your vault before use. I am sharing this plugin in good faith, but I cannot be held responsible for any issues resulting from its use.
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ducktapekiller)
