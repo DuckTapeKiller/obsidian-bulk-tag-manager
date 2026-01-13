@@ -1,0 +1,10 @@
+{
+	"id": "obsidian-bulk-tag-manager",
+	"name": "Bulk Tag Manager",
+	"version": "1.2.0",
+	"minAppVersion": "0.15.0",
+	"description": "Bulk convert all tags in your vault to lowercase, verify stats, and generate tag lists.",
+	"author": "Antigravity",
+	"authorUrl": "https://github.com/peregrino",
+	"isDesktopOnly": false
+}
