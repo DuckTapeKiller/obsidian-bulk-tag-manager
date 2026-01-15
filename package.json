@@ -1,5 +1,5 @@
 {
-    "name": "obsidian-bulk-tag-manager",
+    "name": "bulk-tag-manager",
     "version": "1.0.0",
     "description": "Bulk convert all tags in your vault to lowercase, verify stats, and generate tag lists.",
     "main": "main.js",
