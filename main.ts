@@ -233,7 +233,8 @@ export default class TagLowercasePlugin extends Plugin {
         });
 
         await this.app.vault.process(file, (data) => {
-            // eslint-disable-next-line no-useless-escape -- Regex specific for Obsidian tag syntax            const tagRegex = /(^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
+            // eslint-disable-next-line no-useless-escape -- Regex specific for Obsidian tag syntax
+            const tagRegex = /(^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
             return data.replace(tagRegex, (match, prefix, tag) => {
                 const clean = tag.substring(1);
                 const converted = this.convertTagContent(clean);
@@ -288,7 +289,7 @@ class TagManagerModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
-        contentEl.createEl('h1', { text: 'Bulk Tag Manager' });
+        new Setting(contentEl).setName('Bulk Tag Manager').setHeading();
 
         // Stats Section
         this.statsEl = contentEl.createEl('div', { cls: 'tag-manager-stats' });
@@ -296,7 +297,7 @@ class TagManagerModal extends Modal {
 
         // NEW Renamer Section
         contentEl.createEl('hr');
-        contentEl.createEl('h3', { text: 'Rename Specific Tag' });
+        new Setting(contentEl).setName('Rename Specific Tag').setHeading();
         const renameContainer = contentEl.createEl('div', { cls: 'tag-manager-rename', attr: { style: 'display: flex; gap: 10px; align-items: flex-end;' } });
 
         const findDiv = renameContainer.createEl('div');
@@ -322,7 +323,7 @@ class TagManagerModal extends Modal {
         contentEl.createEl('hr');
 
         // Settings Section
-        contentEl.createEl('h3', { text: 'Bulk Settings' });
+        new Setting(contentEl).setName('Bulk Settings').setHeading();
 
         new Setting(contentEl)
             .setName('Case Strategy')
@@ -331,7 +332,7 @@ class TagManagerModal extends Modal {
                 .addOption('uppercase', 'Uppercase')
                 .addOption('none', 'No Casing Change')
                 .setValue(this.plugin.settings.caseStrategy)
-                .onChange(async (value: any) => {
+                .onChange(async (value: TagLowercaseSettings['caseStrategy']) => {
                     this.plugin.settings.caseStrategy = value;
                     await this.plugin.saveSettings();
                     this.updateStats();
@@ -344,7 +345,7 @@ class TagManagerModal extends Modal {
                 .addOption('snake', 'Snake Case (- to _)')
                 .addOption('kebab', 'Kebab Case (_ to -)')
                 .setValue(this.plugin.settings.separatorStrategy)
-                .onChange(async (value: any) => {
+                .onChange(async (value: TagLowercaseSettings['separatorStrategy']) => {
                     this.plugin.settings.separatorStrategy = value;
                     await this.plugin.saveSettings();
                     this.updateStats();
@@ -424,7 +425,7 @@ class TagLowercaseSettingTab extends PluginSettingTab {
     display(): void {
         const { containerEl } = this;
         containerEl.empty();
-        containerEl.createEl('h2', { text: 'Tag Conversion Settings' });
+        new Setting(containerEl).setName('Tag Conversion Settings').setHeading();
         containerEl.createEl('p', { text: 'You can also access these settings and run actions via the Ribbon Icon dashboard.' });
 
         new Setting(containerEl)
@@ -434,7 +435,7 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .addOption('uppercase', 'Uppercase')
                 .addOption('none', 'No Change')
                 .setValue(this.plugin.settings.caseStrategy)
-                .onChange(async (value: any) => {
+                .onChange(async (value: TagLowercaseSettings['caseStrategy']) => {
                     this.plugin.settings.caseStrategy = value;
                     await this.plugin.saveSettings();
                 }));
@@ -446,7 +447,7 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .addOption('snake', 'Snake Case')
                 .addOption('kebab', 'Kebab Case')
                 .setValue(this.plugin.settings.separatorStrategy)
-                .onChange(async (value: any) => {
+                .onChange(async (value: TagLowercaseSettings['separatorStrategy']) => {
                     this.plugin.settings.separatorStrategy = value;
                     await this.plugin.saveSettings();
                 }));
