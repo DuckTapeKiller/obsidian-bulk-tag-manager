@@ -233,8 +233,7 @@ export default class TagLowercasePlugin extends Plugin {
         });
 
         await this.app.vault.process(file, (data) => {
-            // eslint-disable-next-line no-useless-escape
-            const tagRegex = /(^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
+            // eslint-disable-next-line no-useless-escape -- Regex specific for Obsidian tag syntax            const tagRegex = /(^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
             return data.replace(tagRegex, (match, prefix, tag) => {
                 const clean = tag.substring(1);
                 const converted = this.convertTagContent(clean);
