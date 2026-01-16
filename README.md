@@ -1,5 +1,7 @@
 # Bulk Tag Manager
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ducktapekiller)
+
 **Bulk Tag Manager** is a comprehensive utility for Obsidian that helps you clean, standardize, and organize your tags across the entire vault.
 
 It provides a dashboard to rename specific tags, enforce casing rules (lowercase/uppercase), standardise separators (snake_case/kebab-case), and generate master tag lists.
