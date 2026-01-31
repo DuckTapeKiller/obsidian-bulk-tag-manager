@@ -1,9 +1,9 @@
 {
     "id": "bulk-tag-manager",
     "name": "Bulk Tag Manager",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "minAppVersion": "0.15.0",
-    "description": "Bulk convert all tags in your vault to lowercase, verify stats, and generate tag lists.",
+    "description": "Comprehensive tag management: rename, merge, pattern-based rename, preview changes, undo history, hierarchy view, orphan detection, aliases, and scope filtering.",
     "author": "DuckTapeKiller",
     "authorUrl": "https://github.com/DuckTapeKiller",
     "isDesktopOnly": false
