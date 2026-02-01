@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, TextComponent, SuggestModal, TFolder, setIcon } from 'obsidian';
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, TextComponent, SuggestModal, TFolder, setIcon, setTooltip } from 'obsidian';
 
 // --- Interfaces ---
 
@@ -44,34 +44,47 @@ interface ScopeFilter {
 interface TagStandardizationStats {
     totalTags: number;
     caseStats: {
-        lowercase: number;
-        uppercase: number;
-        mixed: number;
+        lowercase: string[];
+        uppercase: string[];
+        mixed: string[];
         consistency: number;
     };
     separatorStats: {
-        underscore: number;
-        hyphen: number;
-        both: number;
-        none: number;
+        underscore: string[];
+        hyphen: string[];
+        both: string[];
+        none: string[];
         consistency: number;
     };
     specialCharStats: {
-        withSpecial: number;
-        clean: number;
+        withSpecial: string[];
+        clean: string[];
         consistency: number;
     };
     nestingStats: {
-        nested: number;
-        flat: number;
+        nested: string[];
+        flat: string[];
         maxDepth: number;
     };
     lengthStats: {
-        short: number;
-        medium: number;
-        long: number;
+        short: string[];
+        medium: string[];
+        long: string[];
         avgLength: number;
     };
+    locationStats: {
+        frontmatter: string[];
+        body: string[];
+    };
+
+    inlineFiles: { file: TFile; count: number; tags: string[] }[];
+    nestedFiles: { file: TFile; count: number; tags: string[] }[];
+}
+
+interface InvalidTagFile {
+    path: string;
+    file: TFile;
+    issues: string[];
 }
 
 interface TagLowercaseSettings {
@@ -79,6 +92,7 @@ interface TagLowercaseSettings {
     separatorStrategy: 'preserve' | 'snake' | 'kebab';
     removeSpecialChars: boolean;
     applyToNestedTags: boolean;
+    tagFormat: 'inline' | 'list';
     aliases: Record<string, string>;
     operationHistory: OperationRecord[];
     scopeFilter: ScopeFilter;
@@ -91,6 +105,7 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
     separatorStrategy: 'preserve',
     removeSpecialChars: false,
     applyToNestedTags: true,
+    tagFormat: 'inline',
     aliases: {},
     operationHistory: [],
     scopeFilter: {
@@ -781,121 +796,300 @@ export default class TagLowercasePlugin extends Plugin {
             .sort((a, b) => a.count - b.count);
     }
 
-    analyzeTagStandardization(): TagStandardizationStats {
+    analyzeTagStandardization(files: TFile[]): TagStandardizationStats {
         const tags = Object.keys(this.app.metadataCache.getTags() || {});
         const totalTags = tags.length;
 
-        if (totalTags === 0) {
-            return {
-                totalTags: 0,
-                caseStats: { lowercase: 0, uppercase: 0, mixed: 0, consistency: 100 },
-                separatorStats: { underscore: 0, hyphen: 0, both: 0, none: 0, consistency: 100 },
-                specialCharStats: { withSpecial: 0, clean: 0, consistency: 100 },
-                nestingStats: { nested: 0, flat: 0, maxDepth: 0 },
-                lengthStats: { short: 0, medium: 0, long: 0, avgLength: 0 }
-            };
-        }
+        // Initialize arrays
+        const stats: TagStandardizationStats = {
+            totalTags,
+            caseStats: { lowercase: [], uppercase: [], mixed: [], consistency: 100 },
+            separatorStats: { underscore: [], hyphen: [], both: [], none: [], consistency: 100 },
+            specialCharStats: { withSpecial: [], clean: [], consistency: 100 },
+            nestingStats: { nested: [], flat: [], maxDepth: 0 },
+            lengthStats: { short: [], medium: [], long: [], avgLength: 0 },
+            locationStats: { frontmatter: [], body: [] },
+            inlineFiles: [],
+            nestedFiles: []
+        };
 
-        // Case analysis
-        let lowercase = 0, uppercase = 0, mixedCase = 0;
+        if (totalTags === 0) return stats;
 
-        // Separator analysis
-        let underscore = 0, hyphen = 0, bothSeparators = 0, noSeparator = 0;
-
-        // Special character analysis (non-alphanumeric except _ - /)
-        let withSpecial = 0, clean = 0;
-
-        // Nesting analysis
-        let nested = 0, flat = 0;
-        let maxDepth = 0;
-
-        // Length analysis
-        let short = 0, medium = 0, long = 0;
+        // 1. Analyze Tag Strings (Global)
         let totalLength = 0;
 
         for (const tag of tags) {
             const rawTag = tag.startsWith('#') ? tag.substring(1) : tag;
 
-            // Case check (ignore non-letter chars)
+            // Case check
             const letters = rawTag.replace(/[^a-zA-Z]/g, '');
             if (letters.length > 0) {
                 const isAllLower = letters === letters.toLowerCase();
                 const isAllUpper = letters === letters.toUpperCase();
-                if (isAllLower && !isAllUpper) lowercase++;
-                else if (isAllUpper && !isAllLower) uppercase++;
-                else mixedCase++;
+                if (isAllLower && !isAllUpper) stats.caseStats.lowercase.push(tag);
+                else if (isAllUpper && !isAllLower) stats.caseStats.uppercase.push(tag);
+                else stats.caseStats.mixed.push(tag);
             } else {
-                lowercase++; // No letters = count as consistent
+                stats.caseStats.lowercase.push(tag); // Default
             }
 
             // Separator check
             const hasUnderscore = rawTag.includes('_');
             const hasHyphen = rawTag.includes('-');
-            if (hasUnderscore && hasHyphen) bothSeparators++;
-            else if (hasUnderscore) underscore++;
-            else if (hasHyphen) hyphen++;
-            else noSeparator++;
+            if (hasUnderscore && hasHyphen) stats.separatorStats.both.push(tag);
+            else if (hasUnderscore) stats.separatorStats.underscore.push(tag);
+            else if (hasHyphen) stats.separatorStats.hyphen.push(tag);
+            else stats.separatorStats.none.push(tag);
 
-            // Special character check (anything that's not alphanumeric, _, -, /)
+            // Special char check
             const hasSpecial = /[^a-zA-Z0-9_\-\/]/.test(rawTag);
-            if (hasSpecial) withSpecial++;
-            else clean++;
+            if (hasSpecial) stats.specialCharStats.withSpecial.push(tag);
+            else stats.specialCharStats.clean.push(tag);
 
             // Nesting check
             const depth = (rawTag.match(/\//g) || []).length + 1;
-            if (depth > 1) nested++;
-            else flat++;
-            maxDepth = Math.max(maxDepth, depth);
+            if (depth > 1) stats.nestingStats.nested.push(tag);
+            else stats.nestingStats.flat.push(tag);
+            stats.nestingStats.maxDepth = Math.max(stats.nestingStats.maxDepth, depth);
 
             // Length check
             totalLength += rawTag.length;
-            if (rawTag.length <= 10) short++;
-            else if (rawTag.length <= 25) medium++;
-            else long++;
+            if (rawTag.length <= 10) stats.lengthStats.short.push(tag);
+            else if (rawTag.length <= 25) stats.lengthStats.medium.push(tag);
+            else stats.lengthStats.long.push(tag);
         }
 
-        // Calculate consistency percentages
-        const dominantCase = Math.max(lowercase, uppercase, mixedCase);
-        const caseConsistency = totalTags > 0 ? Math.round((dominantCase / totalTags) * 100) : 100;
+        // 2. Analyze Location (Frontmatter vs Body)
+        // Use Sets to count unique tags in each location
+        const fmTags = new Set<string>();
+        const bodyTags = new Set<string>();
 
-        const separatorCounts = [underscore, hyphen, noSeparator];
-        const dominantSeparator = Math.max(...separatorCounts);
-        const separatorConsistency = totalTags > 0 ? Math.round(((dominantSeparator + (bothSeparators === 0 ? 0 : 0)) / totalTags) * 100) : 100;
+        // We iterate files which is safer for determining current usages
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (!cache) continue;
 
-        const specialConsistency = totalTags > 0 ? Math.round((clean / totalTags) * 100) : 100;
+            const fileInlineSet = new Set<string>();
+            const fileNestedSet = new Set<string>();
 
-        return {
-            totalTags,
-            caseStats: {
-                lowercase,
-                uppercase,
-                mixed: mixedCase,
-                consistency: caseConsistency
-            },
-            separatorStats: {
-                underscore,
-                hyphen,
-                both: bothSeparators,
-                none: noSeparator,
-                consistency: separatorConsistency
-            },
-            specialCharStats: {
-                withSpecial,
-                clean,
-                consistency: specialConsistency
-            },
-            nestingStats: {
-                nested,
-                flat,
-                maxDepth
-            },
-            lengthStats: {
-                short,
-                medium,
-                long,
-                avgLength: Math.round(totalLength / totalTags)
+            // Frontmatter
+            const fm = cache.frontmatter;
+            if (fm) {
+                let list: string[] = [];
+                if (fm.tags) {
+                    if (typeof fm.tags === 'string') list = fm.tags.split(',').map(t => t.trim());
+                    else if (Array.isArray(fm.tags)) list = fm.tags.map(t => String(t));
+                }
+                if (fm.tag) {
+                    if (typeof fm.tag === 'string') list = list.concat([fm.tag]);
+                    else if (Array.isArray(fm.tag)) list = list.concat(fm.tag.map(t => String(t)));
+                }
+
+                list.forEach(t => {
+                    const clean = t.startsWith('#') ? t.substring(1) : t;
+                    fmTags.add(clean);
+                    if (clean.includes('/')) fileNestedSet.add(clean);
+                });
             }
+
+            // Body (Inline Tags)
+            if (cache.tags) {
+                cache.tags.forEach(t => {
+                    const clean = t.tag.startsWith('#') ? t.tag.substring(1) : t.tag;
+                    bodyTags.add(clean);
+                    fileInlineSet.add(clean);
+                    if (clean.includes('/')) fileNestedSet.add(clean);
+                });
+            }
+
+            if (fileInlineSet.size > 0) {
+                stats.inlineFiles.push({
+                    file,
+                    count: fileInlineSet.size,
+                    tags: Array.from(fileInlineSet).sort()
+                });
+            }
+
+            if (fileNestedSet.size > 0) {
+                stats.nestedFiles.push({
+                    file,
+                    count: fileNestedSet.size,
+                    tags: Array.from(fileNestedSet).sort()
+                });
+            }
+        }
+
+        stats.locationStats.frontmatter = Array.from(fmTags).sort();
+        stats.locationStats.body = Array.from(bodyTags).sort();
+
+        // Calculate Average
+        stats.lengthStats.avgLength = Math.round(totalLength / totalTags);
+
+        // Calculate Consistencies
+        const calcConsistency = (arrays: string[][]) => {
+            const dominant = Math.max(...arrays.map(a => a.length));
+            return Math.round((dominant / totalTags) * 100);
         };
+
+        stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
+
+        // For separators
+        const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
+        const dominantSep = Math.max(...sepArrays.map(a => a.length));
+        stats.separatorStats.consistency = Math.round(((dominantSep + (stats.separatorStats.both.length === 0 ? 0 : 0)) / totalTags) * 100);
+
+        stats.specialCharStats.consistency = Math.round((stats.specialCharStats.clean.length / totalTags) * 100);
+
+        return stats;
+    }
+
+
+    async findInvalidTagFormats(): Promise<InvalidTagFile[]> {
+        const invalidFiles: InvalidTagFile[] = [];
+        const files = this.getFilteredFiles();
+
+        for (const file of files) {
+            // Use MetadataCache for performance and accuracy
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (!cache?.frontmatter) continue;
+
+            const issues: string[] = [];
+            const fm = cache.frontmatter;
+
+            // Helper to check a key
+            const checkKey = (key: string, value: any) => {
+                if (value === undefined || value === null) return;
+
+                if (typeof value === 'string') {
+                    // Check for comma-separated
+                    if (value.includes(',')) {
+                        issues.push(`"${key}" uses comma-separated format instead of YAML array`);
+                    } else if (value.trim().length > 0 && value.trim().includes(' ')) {
+                        issues.push(`"${key}" contains spaces - may be invalid`);
+                    }
+                } else if (Array.isArray(value)) {
+                    // Check elements
+                    value.forEach(t => {
+                        if (typeof t === 'string' && t.trim().includes(' ')) {
+                            issues.push(`Tag "${t}" contains spaces`);
+                        }
+                    });
+                }
+            };
+
+            if ('tags' in fm) checkKey('tags', fm.tags);
+            if ('tag' in fm) checkKey('tag', fm.tag);
+
+            if (issues.length > 0) {
+                invalidFiles.push({
+                    path: file.path,
+                    file: file,
+                    issues: issues
+                });
+            }
+        }
+
+        return invalidFiles;
+    }
+
+    async findEmptyTags(): Promise<TFile[]> {
+        const emptyFiles: TFile[] = [];
+        const files = this.getFilteredFiles();
+
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (!cache?.frontmatter) continue;
+            const fm = cache.frontmatter;
+
+            // Check if 'tags' key exists but result is empty/null
+            if ('tags' in fm) {
+                const val = fm.tags;
+                if (val === null || val === undefined || (Array.isArray(val) && val.length === 0)) {
+                    emptyFiles.push(file);
+                }
+            }
+        }
+        return emptyFiles;
+    }
+
+    async fixAndStandardizeTags(file: TFile): Promise<boolean> {
+        let modified = false;
+
+        // 1. Data Normalization (Fix broken formats)
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
+            if (fm.tags) {
+                if (typeof fm.tags === 'string') {
+                    // Handle "a, b, c" format
+                    fm.tags = fm.tags.split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0);
+                    modified = true;
+                }
+            }
+        });
+
+        // 2. Format Standardization (Inline vs List)
+        if (this.settings.tagFormat === 'inline') {
+            // Read file and enforce inline format
+            const content = await this.app.vault.read(file);
+            const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+            if (fmMatch) {
+                const originalFm = fmMatch[1];
+                // Check if tags are in list format
+                const listPattern = /^(tags?):\s*(?:\n\s*-.*)+/m;
+                if (listPattern.test(originalFm)) {
+                    // Check metadata for values
+                    const cache = this.app.metadataCache.getFileCache(file);
+                    const tags = cache?.frontmatter?.tags;
+
+                    if (Array.isArray(tags)) {
+                        const inlineString = `tags: [${tags.join(', ')}]`;
+                        const newFm = originalFm.replace(listPattern, inlineString);
+                        const newContent = content.replace(originalFm, newFm);
+                        if (newContent !== content) {
+                            await this.app.vault.modify(file, newContent);
+                            modified = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return modified;
+    }
+
+    async standardizeAllTags() {
+        const files = this.getFilteredFiles();
+        if (files.length === 0) {
+            new Notice('No files to standardize.');
+            return;
+        }
+
+        const progressModal = new ProgressModal(this.app, files.length);
+        progressModal.open();
+
+        let count = 0;
+        let modifiedCount = 0;
+
+        for (const file of files) {
+            try {
+                // We run fixAndStandardizeTags.
+                // Note: it reads/writes file, so it's a bit slow.
+                await this.fixAndStandardizeTags(file);
+                // We can't easily track "modified" here accurately
+                // because fixAndStandardizeTags uses promises and maybe 2 writes.
+                // But it's fine.
+                modifiedCount++;
+                count++;
+                progressModal.update(count);
+            } catch (e) {
+                console.error(`Failed to standardize ${file.path}`, e);
+            }
+        }
+
+        progressModal.close();
+        new Notice(`Standardization check complete on ${count} files.`);
+        // Refresh stats
+        // We need a callback or event?
+        // This method is called from Modal, which closes anyway.
     }
 
     // --- Aliases ---
@@ -1207,7 +1401,316 @@ class TagHierarchyModal extends Modal {
     }
 }
 
+// Invalid Tags Modal
+class InvalidTagsModal extends Modal {
+    private plugin: TagLowercasePlugin;
+    private invalidFiles: InvalidTagFile[];
+
+    constructor(app: App, plugin: TagLowercasePlugin, invalidFiles: InvalidTagFile[]) {
+        super(app);
+        this.plugin = plugin;
+        this.invalidFiles = invalidFiles;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-invalid-modal');
+
+        new Setting(contentEl)
+            .setName('Files with Invalid Tag Format')
+            .setDesc(`${this.invalidFiles.length} file${this.invalidFiles.length > 1 ? 's' : ''} found with tag format issues`)
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
+
+        for (const item of this.invalidFiles) {
+            const itemEl = listEl.createDiv({ cls: 'btm-invalid-item' });
+
+            const headerEl = itemEl.createDiv({ cls: 'btm-invalid-item-header' });
+            const iconEl = headerEl.createSpan({ cls: 'btm-icon' });
+            setIcon(iconEl, 'file-warning');
+
+            const linkEl = headerEl.createEl('a', {
+                text: item.path,
+                cls: 'btm-invalid-file-link'
+            });
+            linkEl.onclick = (e) => {
+                e.preventDefault();
+                this.close();
+                this.app.workspace.openLinkText(item.path, '', false);
+            };
+
+            const fixBtn = headerEl.createEl('button', { text: 'Fix', cls: 'btm-view-invalid-btn' });
+            fixBtn.onclick = async () => {
+                await this.plugin.fixAndStandardizeTags(item.file);
+                new Notice(`Fixed tags in ${item.file.basename}`);
+                itemEl.remove();
+            };
+
+            const issuesEl = itemEl.createDiv({ cls: 'btm-invalid-issues' });
+            for (const issue of item.issues) {
+                const issueEl = issuesEl.createDiv({ cls: 'btm-invalid-issue' });
+                const issueIcon = issueEl.createSpan({ cls: 'btm-icon' });
+                setIcon(issueIcon, 'alert-circle');
+                issueEl.createSpan({ text: ' ' + issue });
+            }
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
+
+        const fixAllBtn = btnRow.createEl('button', { text: 'Fix All', cls: 'mod-cta' });
+        fixAllBtn.onclick = async () => {
+            const progressModal = new ProgressModal(this.app, this.invalidFiles.length);
+            progressModal.open();
+            let count = 0;
+
+            for (const item of this.invalidFiles) {
+                try {
+                    await this.plugin.fixAndStandardizeTags(item.file);
+                    count++;
+                    progressModal.update(count);
+                } catch (e) {
+                    console.error('Failed to fix ' + item.path, e);
+                }
+            }
+            progressModal.close();
+            new Notice(`Fixed tags in ${count} files.`);
+            this.close();
+        };
+
+        const closeBtn = btnRow.createEl('button', { text: 'Close' });
+        closeBtn.onclick = () => this.close();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class EmptyTagsModal extends Modal {
+    private emptyFiles: TFile[];
+
+    constructor(app: App, emptyFiles: TFile[]) {
+        super(app);
+        this.emptyFiles = emptyFiles;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-invalid-modal'); // Reuse styles
+
+        new Setting(contentEl)
+            .setName('Files with Empty Tags')
+            .setDesc(`${this.emptyFiles.length} file${this.emptyFiles.length > 1 ? 's' : ''} found`)
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
+
+        for (const file of this.emptyFiles) {
+            const itemEl = listEl.createDiv({ cls: 'btm-invalid-item' });
+            const headerEl = itemEl.createDiv({ cls: 'btm-invalid-item-header' });
+            // Simplified item
+            const iconEl = headerEl.createSpan({ cls: 'btm-icon' });
+            setIcon(iconEl, 'file');
+
+            const linkEl = headerEl.createEl('a', {
+                text: file.path,
+                cls: 'btm-invalid-file-link'
+            });
+            linkEl.onclick = (e) => {
+                e.preventDefault();
+                this.close();
+                this.app.workspace.openLinkText(file.path, '', false);
+            };
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
+        const closeBtn = btnRow.createEl('button', { text: 'Close' });
+        closeBtn.onclick = () => this.close();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+// Tag List Modal
+
+// Inline Files Modal component
+class InlineTagsModal extends Modal {
+    private inlineFiles: { file: TFile; count: number; tags: string[] }[];
+
+    constructor(app: App, inlineFiles: { file: TFile; count: number; tags: string[] }[]) {
+        super(app);
+        this.inlineFiles = inlineFiles;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-invalid-modal');
+
+        new Setting(contentEl)
+            .setName('Notes with Inline Tags')
+            .setDesc(`${this.inlineFiles.length} notes found with tags in body`)
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
+
+        for (const item of this.inlineFiles) {
+            const itemEl = listEl.createDiv({ cls: 'btm-invalid-item' });
+
+            const headerEl = itemEl.createDiv({ cls: 'btm-invalid-item-header' });
+            const iconEl = headerEl.createSpan({ cls: 'btm-icon' });
+            setIcon(iconEl, 'file-text');
+
+            const titleEl = headerEl.createEl('a', {
+                text: item.file.basename,
+                cls: 'btm-invalid-file-link'
+            });
+            titleEl.onclick = () => {
+                this.close();
+                this.app.workspace.openLinkText(item.file.path, '', false);
+            };
+
+            const countSpan = headerEl.createSpan({ text: ` — ${item.count} inline tags`, cls: 'btm-highlight' });
+            countSpan.style.marginLeft = '10px';
+            countSpan.style.fontSize = '12px';
+
+            const tagsEl = itemEl.createDiv({ cls: 'btm-metric-details' });
+            tagsEl.style.marginTop = '8px';
+            for (const tag of item.tags) {
+                tagsEl.createSpan({ text: '#' + tag });
+            }
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
+        const closeBtn = btnRow.createEl('button', { text: 'Close' });
+        closeBtn.onclick = () => this.close();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+// Nested Files Modal component
+class NestedFilesModal extends Modal {
+    private nestedFiles: { file: TFile; count: number; tags: string[] }[];
+
+    constructor(app: App, nestedFiles: { file: TFile; count: number; tags: string[] }[]) {
+        super(app);
+        this.nestedFiles = nestedFiles;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-invalid-modal');
+
+        new Setting(contentEl)
+            .setName('Notes with Nested Tags')
+            .setDesc(`${this.nestedFiles.length} notes found containing hierarchical tags`)
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
+
+        for (const item of this.nestedFiles) {
+            const itemEl = listEl.createDiv({ cls: 'btm-invalid-item' });
+
+            const headerEl = itemEl.createDiv({ cls: 'btm-invalid-item-header' });
+            const iconEl = headerEl.createSpan({ cls: 'btm-icon' });
+            setIcon(iconEl, 'file-text');
+
+            const titleEl = headerEl.createEl('a', {
+                text: item.file.basename,
+                cls: 'btm-invalid-file-link'
+            });
+            titleEl.onclick = () => {
+                this.close();
+                this.app.workspace.openLinkText(item.file.path, '', false);
+            };
+
+            const countSpan = headerEl.createSpan({ text: ` — ${item.count} nested tags`, cls: 'btm-highlight' });
+            countSpan.style.marginLeft = '10px';
+            countSpan.style.fontSize = '12px';
+
+            const tagsEl = itemEl.createDiv({ cls: 'btm-metric-details' });
+            tagsEl.style.marginTop = '8px';
+            for (const tag of item.tags) {
+                tagsEl.createSpan({ text: '#' + tag });
+            }
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
+        const closeBtn = btnRow.createEl('button', { text: 'Close' });
+        closeBtn.onclick = () => this.close();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+// Tag List Modal
+
+class TagListModal extends Modal {
+    private tags: string[];
+    private title: string;
+
+    constructor(app: App, title: string, tags: string[]) {
+        super(app);
+        this.title = title;
+        this.tags = tags;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-tag-list-modal');
+
+        new Setting(contentEl)
+            .setName(this.title)
+            .setDesc(`${this.tags.length} tags found`)
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
+
+        for (const tag of this.tags) {
+            const itemEl = listEl.createDiv({ cls: 'btm-invalid-item btm-tag-item' });
+
+            // Tag with color? (Remove duplicated hash)
+            const tagText = tag.startsWith('#') ? tag : '#' + tag;
+            const tagEl = itemEl.createSpan({ text: tagText, cls: 'btm-tag-pill' });
+            // Should be clickable to search
+
+            const btn = itemEl.createEl('button', { text: 'Search', cls: 'btm-search-btn' });
+            btn.onclick = () => {
+                this.close();
+                // Open global search
+                const searchPlugin = (this.app as any).internalPlugins?.getPluginById('global-search');
+                if (searchPlugin?.instance) {
+                    searchPlugin.instance.openGlobalSearch(`tag:${tagText}`);
+                } else {
+                    new Notice('Global Search plugin not enabled');
+                }
+            };
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
+        const closeBtn = btnRow.createEl('button', { text: 'Close' });
+        closeBtn.onclick = () => this.close();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
 // Orphan Tags Modal
+
 class OrphanTagsModal extends Modal {
     private plugin: TagLowercasePlugin;
 
@@ -1486,6 +1989,7 @@ class TagManagerModal extends Modal {
     mergeTargetInput: TextComponent;
     patternInput: TextComponent;
     patternReplaceInput: TextComponent;
+    metricsGrid: HTMLElement; // For layout consistency
 
     constructor(app: App, plugin: TagLowercasePlugin) {
         super(app);
@@ -1499,35 +2003,58 @@ class TagManagerModal extends Modal {
 
         new Setting(contentEl).setName('Bulk Tag Manager').setHeading();
 
-        // Stats Section
-        this.statsEl = contentEl.createDiv({ cls: 'btm-stats' });
+        // --- Overview Section (Collapsible) ---
+        const overviewBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        const overviewHeader = overviewBox.createDiv({ cls: 'btm-collapsible-header' });
+        overviewHeader.createSpan({ text: 'Overview (Stats)' });
+        const arrow = overviewHeader.createSpan({ cls: 'btm-header-arrow' });
+        setIcon(arrow, 'chevron-down');
+
+        this.statsEl = overviewBox.createDiv({ cls: 'btm-collapsible-content' });
         this.updateStats();
 
+        // Toggle logic
+        let isExpanded = true;
+        overviewHeader.onclick = () => {
+            isExpanded = !isExpanded;
+            if (isExpanded) {
+                this.statsEl.removeClass('is-collapsed');
+                arrow.removeClass('is-collapsed');
+            } else {
+                this.statsEl.addClass('is-collapsed');
+                arrow.addClass('is-collapsed');
+            }
+        };
+
         // --- Rename Section ---
-        contentEl.createEl('hr');
-        new Setting(contentEl).setName('Rename Tag').setHeading();
+        const renameBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        renameBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Rename Tag' });
 
-        const renameContainer = contentEl.createDiv({ cls: 'btm-input-row' });
+        const renameContainer = renameBox.createDiv({ cls: 'btm-aligned-row' });
 
-        const findDiv = renameContainer.createDiv({ cls: 'btm-input-group' });
-        findDiv.createEl('label', { text: 'Find' });
-        this.findInput = new TextComponent(findDiv).setPlaceholder('#old-tag');
-        const findSuggestBtn = findDiv.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn' });
+        // Col 1: Find
+        const findCol = renameContainer.createDiv({ cls: 'btm-field-column' });
+        findCol.createEl('label', { text: 'Find' });
+        this.findInput = new TextComponent(findCol).setPlaceholder('#old-tag');
+        const findSuggestBtn = findCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(findSuggestBtn, 'search');
-        const tagCountDisplay = findDiv.createDiv({ cls: 'btm-tag-count-display' });
+        findSuggestBtn.createSpan({ text: ' Search' });
+        const tagCountDisplay = findCol.createDiv({ cls: 'btm-tag-count-display', attr: { style: 'font-size: 11px; margin-top: 4px; color: var(--text-muted);' } });
 
         findSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
             this.findInput.setValue(t);
             const tags = this.plugin.app.metadataCache.getTags() || {};
             const count = tags['#' + t] || 0;
-            tagCountDisplay.textContent = `${count} occurrence${count === 1 ? '' : 's'}`;
+            tagCountDisplay.textContent = `${count} pos`;
         }).open();
 
-        const replaceDiv = renameContainer.createDiv({ cls: 'btm-input-group' });
-        replaceDiv.createEl('label', { text: 'Replace' });
-        this.replaceInput = new TextComponent(replaceDiv).setPlaceholder('#new-tag');
+        // Col 2: Replace
+        const replaceCol = renameContainer.createDiv({ cls: 'btm-field-column' });
+        replaceCol.createEl('label', { text: 'Replace' });
+        this.replaceInput = new TextComponent(replaceCol).setPlaceholder('#new-tag');
 
-        const btnRename = renameContainer.createEl('button', { text: 'Rename', cls: 'mod-cta' });
+        // Col 3: Action
+        const btnRename = renameContainer.createEl('button', { text: 'Rename', cls: 'mod-cta btm-action-btn' });
         btnRename.onclick = async () => {
             const oldT = this.findInput.getValue();
             const newT = this.replaceInput.getValue();
@@ -1540,29 +2067,33 @@ class TagManagerModal extends Modal {
         };
 
         // --- Merge Section ---
-        contentEl.createEl('hr');
-        new Setting(contentEl).setName('Merge Tags').setDesc('Combine multiple tags into one').setHeading();
+        const mergeBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        mergeBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Merge Tags' });
 
-        const mergeContainer = contentEl.createDiv({ cls: 'btm-input-row' });
+        const mergeContainer = mergeBox.createDiv({ cls: 'btm-aligned-row' });
 
-        const sourcesDiv = mergeContainer.createDiv({ cls: 'btm-input-group btm-wide' });
-        sourcesDiv.createEl('label', { text: 'Source tags' });
-        this.mergeSourcesInput = new TextComponent(sourcesDiv).setPlaceholder('#tag1, #tag2, #tag3');
-        const selectTagsBtn = sourcesDiv.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn' });
+        // Col 1: Source
+        const sourceCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
+        sourceCol.createEl('label', { text: 'Source tags' });
+        this.mergeSourcesInput = new TextComponent(sourceCol).setPlaceholder('#tag1, #tag2');
+        const selectTagsBtn = sourceCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(selectTagsBtn, 'list-filter');
         selectTagsBtn.createSpan({ text: ' Select' });
         selectTagsBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
             this.mergeSourcesInput.setValue(tags.map(t => '#' + t).join(', '));
         }).open();
 
-        const targetDiv = mergeContainer.createDiv({ cls: 'btm-input-group' });
-        targetDiv.createEl('label', { text: 'Target' });
-        this.mergeTargetInput = new TextComponent(targetDiv).setPlaceholder('#merged');
-        const targetSuggestBtn = targetDiv.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn' });
+        // Col 2: Target
+        const targetCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
+        targetCol.createEl('label', { text: 'Target' });
+        this.mergeTargetInput = new TextComponent(targetCol).setPlaceholder('#merged');
+        const targetSuggestBtn = targetCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(targetSuggestBtn, 'search');
+        targetSuggestBtn.createSpan({ text: ' Search' });
         targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => this.mergeTargetInput.setValue(t)).open();
 
-        const btnMerge = mergeContainer.createEl('button', { text: 'Merge', cls: 'mod-cta' });
+        // Col 3: Action
+        const btnMerge = mergeContainer.createEl('button', { text: 'Merge', cls: 'mod-cta btm-action-btn' });
         btnMerge.onclick = async () => {
             const sources = this.mergeSourcesInput.getValue().split(',').map(s => s.trim()).filter(s => s);
             const target = this.mergeTargetInput.getValue().trim();
@@ -1575,20 +2106,23 @@ class TagManagerModal extends Modal {
         };
 
         // --- Pattern Rename Section ---
-        contentEl.createEl('hr');
-        new Setting(contentEl).setName('Pattern Rename').setDesc('Use regex to rename tags').setHeading();
+        const patternBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        patternBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Pattern Rename (Regex)' });
 
-        const patternContainer = contentEl.createDiv({ cls: 'btm-input-row' });
+        const patternContainer = patternBox.createDiv({ cls: 'btm-aligned-row' });
 
-        const patternDiv = patternContainer.createDiv({ cls: 'btm-input-group' });
-        patternDiv.createEl('label', { text: 'Pattern (regex)' });
-        this.patternInput = new TextComponent(patternDiv).setPlaceholder('^old-(.*)');
+        // Col 1: Pattern
+        const patternCol = patternContainer.createDiv({ cls: 'btm-field-column' });
+        patternCol.createEl('label', { text: 'Pattern' });
+        this.patternInput = new TextComponent(patternCol).setPlaceholder('^old-(.*)');
 
-        const patternReplaceDiv = patternContainer.createDiv({ cls: 'btm-input-group' });
-        patternReplaceDiv.createEl('label', { text: 'Replacement' });
-        this.patternReplaceInput = new TextComponent(patternReplaceDiv).setPlaceholder('new-$1');
+        // Col 2: Replacement
+        const patternRepCol = patternContainer.createDiv({ cls: 'btm-field-column' });
+        patternRepCol.createEl('label', { text: 'Replacement' });
+        this.patternReplaceInput = new TextComponent(patternRepCol).setPlaceholder('new-$1');
 
-        const btnPattern = patternContainer.createEl('button', { text: 'Apply', cls: 'mod-cta' });
+        // Col 3: Action
+        const btnPattern = patternContainer.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
         btnPattern.onclick = async () => {
             const pattern = this.patternInput.getValue();
             const replacement = this.patternReplaceInput.getValue();
@@ -1601,10 +2135,10 @@ class TagManagerModal extends Modal {
         };
 
         // --- Bulk Settings ---
-        contentEl.createEl('hr');
-        new Setting(contentEl).setName('Bulk Conversion Settings').setHeading();
+        const settingsBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        settingsBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Bulk Settings' });
 
-        new Setting(contentEl)
+        new Setting(settingsBox)
             .setName('Case Strategy')
             .addDropdown(dropdown => dropdown
                 .addOption('lowercase', 'Lowercase')
@@ -1617,12 +2151,12 @@ class TagManagerModal extends Modal {
                     this.updateStats();
                 }));
 
-        new Setting(contentEl)
+        new Setting(settingsBox)
             .setName('Separator Style')
             .addDropdown(dropdown => dropdown
                 .addOption('preserve', 'Preserve')
-                .addOption('snake', 'Snake Case (- → _)')
-                .addOption('kebab', 'Kebab Case (_ → -)')
+                .addOption('snake', 'Snake Case')
+                .addOption('kebab', 'Kebab Case')
                 .setValue(this.plugin.settings.separatorStrategy)
                 .onChange(async (value: TagLowercaseSettings['separatorStrategy']) => {
                     this.plugin.settings.separatorStrategy = value;
@@ -1630,7 +2164,7 @@ class TagManagerModal extends Modal {
                     this.updateStats();
                 }));
 
-        new Setting(contentEl)
+        new Setting(settingsBox)
             .setName('Remove Special Characters')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.removeSpecialChars)
@@ -1640,7 +2174,7 @@ class TagManagerModal extends Modal {
                     this.updateStats();
                 }));
 
-        new Setting(contentEl)
+        new Setting(settingsBox)
             .setName('Apply to Nested Tags')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.applyToNestedTags)
@@ -1651,10 +2185,10 @@ class TagManagerModal extends Modal {
                 }));
 
         // --- Scope Filter ---
-        contentEl.createEl('hr');
-        new Setting(contentEl).setName('Scope Filter').setHeading();
+        const scopeBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        scopeBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Scope Filter' });
 
-        new Setting(contentEl)
+        new Setting(scopeBox)
             .setName('Enable Scope Filter')
             .setDesc('Limit operations to specific folders')
             .addToggle(toggle => toggle
@@ -1665,79 +2199,60 @@ class TagManagerModal extends Modal {
                     this.updateStats();
                 }));
 
-        // Include Folders with select button
-        const includeContainer = contentEl.createDiv({ cls: 'btm-scope-row' });
-        includeContainer.createEl('label', { text: 'Include Folders:' });
-        const includeDisplay = includeContainer.createDiv({ cls: 'btm-folder-display' });
-        includeDisplay.textContent = this.plugin.settings.scopeFilter.includeFolders.join(', ') || '(all folders)';
-        const includeBtn = includeContainer.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn' });
+        const includeRow = scopeBox.createDiv({ cls: 'btm-scope-row', attr: { style: 'margin-bottom: 8px;' } });
+        includeRow.createSpan({ text: 'Include: ' });
+        const includeDisplay = includeRow.createSpan({ text: this.plugin.settings.scopeFilter.includeFolders.join(', ') || '(all)', cls: 'btm-folder-display', attr: { style: 'margin-right: 8px;' } });
+        const includeBtn = includeRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(includeBtn, 'folder-plus');
         includeBtn.createSpan({ text: ' Select' });
-        includeBtn.onclick = () => new FolderSelectModal(
-            this.app,
-            this.plugin,
-            this.plugin.settings.scopeFilter.includeFolders,
-            async (folders) => {
-                this.plugin.settings.scopeFilter.includeFolders = folders;
-                await this.plugin.saveSettings();
-                includeDisplay.textContent = folders.join(', ') || '(all folders)';
-                this.updateStats();
-            }
-        ).open();
+        includeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.includeFolders, async (f) => {
+            this.plugin.settings.scopeFilter.includeFolders = f;
+            await this.plugin.saveSettings();
+            includeDisplay.textContent = f.join(', ') || '(all)';
+            this.updateStats();
+        }).open();
 
-        // Exclude Folders with select button
-        const excludeContainer = contentEl.createDiv({ cls: 'btm-scope-row' });
-        excludeContainer.createEl('label', { text: 'Exclude Folders:' });
-        const excludeDisplay = excludeContainer.createDiv({ cls: 'btm-folder-display' });
-        excludeDisplay.textContent = this.plugin.settings.scopeFilter.excludeFolders.join(', ') || '(none)';
-        const excludeBtn = excludeContainer.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn' });
+        const excludeRow = scopeBox.createDiv({ cls: 'btm-scope-row' });
+        excludeRow.createSpan({ text: 'Exclude: ' });
+        const excludeDisplay = excludeRow.createSpan({ text: this.plugin.settings.scopeFilter.excludeFolders.join(', ') || '(none)', cls: 'btm-folder-display', attr: { style: 'margin-right: 8px;' } });
+        const excludeBtn = excludeRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(excludeBtn, 'folder-minus');
         excludeBtn.createSpan({ text: ' Select' });
-        excludeBtn.onclick = () => new FolderSelectModal(
-            this.app,
-            this.plugin,
-            this.plugin.settings.scopeFilter.excludeFolders,
-            async (folders) => {
-                this.plugin.settings.scopeFilter.excludeFolders = folders;
-                await this.plugin.saveSettings();
-                excludeDisplay.textContent = folders.join(', ') || '(none)';
-                this.updateStats();
-            }
-        ).open();
+        excludeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.excludeFolders, async (f) => {
+            this.plugin.settings.scopeFilter.excludeFolders = f;
+            await this.plugin.saveSettings();
+            excludeDisplay.textContent = f.join(', ') || '(none)';
+            this.updateStats();
+        }).open();
 
-        // --- Actions ---
-        contentEl.createEl('hr');
-        const actionRow = contentEl.createDiv({ cls: 'btm-action-row' });
+        // --- Action Row (Bottom) ---
+        const actionBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        actionBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Actions' });
+        const actionRow = actionBox.createDiv({ cls: 'btm-action-row' });
 
         const btnConvert = this.createIconButton(actionRow, 'refresh-cw', 'Convert All', 'mod-cta');
-        btnConvert.onclick = async () => {
-            this.close();
-            await this.plugin.runConversionWithPreview();
-        };
+        setTooltip(btnConvert, 'Run full conversion/standardization based on settings');
+        btnConvert.onclick = async () => { this.close(); await this.plugin.runConversionWithPreview(); };
 
         const btnList = this.createIconButton(actionRow, 'list', 'Tag List');
-        btnList.onclick = async () => {
-            this.close();
-            await this.plugin.generateTagList();
-        };
+        setTooltip(btnList, 'View all tags in a list');
+        btnList.onclick = async () => { this.close(); await this.plugin.generateTagList(); };
 
         const btnHierarchy = this.createIconButton(actionRow, 'git-branch', 'Hierarchy');
-        btnHierarchy.onclick = () => {
-            this.close();
-            new TagHierarchyModal(this.app, this.plugin).open();
-        };
+        setTooltip(btnHierarchy, 'View tag hierarchy tree');
+        btnHierarchy.onclick = () => { this.close(); new TagHierarchyModal(this.app, this.plugin).open(); };
 
         const btnOrphans = this.createIconButton(actionRow, 'alert-circle', 'Orphans');
-        btnOrphans.onclick = () => {
-            this.close();
-            new OrphanTagsModal(this.app, this.plugin).open();
-        };
+        setTooltip(btnOrphans, 'Find orphaned tags');
+        btnOrphans.onclick = () => { this.close(); new OrphanTagsModal(this.app, this.plugin).open(); };
 
         const btnHistory = this.createIconButton(actionRow, 'history', 'History');
-        btnHistory.onclick = () => {
-            this.close();
-            new HistoryModal(this.app, this.plugin).open();
-        };
+        setTooltip(btnHistory, 'View and revert recent changes');
+        btnHistory.onclick = () => { this.close(); new HistoryModal(this.app, this.plugin).open(); };
+
+        const btnStandardize = this.createIconButton(actionRow, 'check-square', 'Fix Invalid');
+        setTooltip(btnStandardize, 'Standardize formats (commas/spaces)');
+        btnStandardize.onclick = async () => { this.close(); await this.plugin.standardizeAllTags(); };
     }
 
     createIconButton(container: HTMLElement, iconName: string, text: string, cls: string = ''): HTMLButtonElement {
@@ -1748,12 +2263,22 @@ class TagManagerModal extends Modal {
         return btn;
     }
 
+    createProgressBar(container: HTMLElement, value: number) {
+        const bar = container.createDiv({ cls: 'btm-progress-bar-mini' });
+        const fill = bar.createDiv({ cls: 'btm-progress-fill-mini' });
+        fill.style.width = `${value}%`;
+        if (value < 50) fill.addClass('btm-progress-low');
+        else if (value < 80) fill.addClass('btm-progress-medium');
+        else fill.addClass('btm-progress-high');
+    }
+
     updateStats() {
         this.statsEl.empty();
         this.statsEl.addClass('btm-standardization-panel');
 
-        const stats = this.plugin.analyzeTagStandardization();
         const files = this.plugin.getFilteredFiles();
+        // Pass files to analyzer
+        const stats = this.plugin.analyzeTagStandardization(files);
 
         // Header stats
         const headerRow = this.statsEl.createDiv({ cls: 'btm-stats-header' });
@@ -1765,70 +2290,135 @@ class TagManagerModal extends Modal {
         setIcon(filesItem.createSpan({ cls: 'btm-stat-icon' }), 'files');
         filesItem.createSpan({ text: ` ${files.length} files` });
 
-        // Standardization metrics
-        const metricsGrid = this.statsEl.createDiv({ cls: 'btm-metrics-grid' });
+        // Standardization metrics - Create Grid
+        this.metricsGrid = this.statsEl.createDiv({ cls: 'btm-metrics-grid' });
+
+        const createStatLink = (container: HTMLElement, count: number, label: string, tags: string[]) => {
+            if (count > 0) {
+                const link = container.createEl('a', { text: `${count} ${label}`, cls: 'btm-stat-link' });
+                link.onclick = () => {
+                    this.close();
+                    new TagListModal(this.app, `${label} Tags`, tags).open();
+                };
+                container.appendText(' ');
+            }
+        };
 
         // Case consistency
-        const caseBox = metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        const caseBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         caseBox.createDiv({ text: 'Case', cls: 'btm-metric-label' });
         this.createProgressBar(caseBox, stats.caseStats.consistency);
         const caseDetails = caseBox.createDiv({ cls: 'btm-metric-details' });
-        if (stats.caseStats.lowercase > 0) caseDetails.createSpan({ text: `${stats.caseStats.lowercase} lower` });
-        if (stats.caseStats.uppercase > 0) caseDetails.createSpan({ text: `${stats.caseStats.uppercase} UPPER` });
-        if (stats.caseStats.mixed > 0) caseDetails.createSpan({ text: `${stats.caseStats.mixed} Mixed` });
+        createStatLink(caseDetails, stats.caseStats.lowercase.length, 'lower', stats.caseStats.lowercase);
+        createStatLink(caseDetails, stats.caseStats.uppercase.length, 'UPPER', stats.caseStats.uppercase);
+        createStatLink(caseDetails, stats.caseStats.mixed.length, 'Mixed', stats.caseStats.mixed);
 
         // Separator consistency
-        const sepBox = metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        const sepBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         sepBox.createDiv({ text: 'Separators', cls: 'btm-metric-label' });
         this.createProgressBar(sepBox, stats.separatorStats.consistency);
         const sepDetails = sepBox.createDiv({ cls: 'btm-metric-details' });
-        if (stats.separatorStats.hyphen > 0) sepDetails.createSpan({ text: `${stats.separatorStats.hyphen} kebab-case` });
-        if (stats.separatorStats.underscore > 0) sepDetails.createSpan({ text: `${stats.separatorStats.underscore} snake_case` });
-        if (stats.separatorStats.both > 0) sepDetails.createSpan({ text: `${stats.separatorStats.both} mixed` });
-        if (stats.separatorStats.none > 0) sepDetails.createSpan({ text: `${stats.separatorStats.none} none` });
+        createStatLink(sepDetails, stats.separatorStats.hyphen.length, 'kebab-case', stats.separatorStats.hyphen);
+        createStatLink(sepDetails, stats.separatorStats.underscore.length, 'snake_case', stats.separatorStats.underscore);
+        createStatLink(sepDetails, stats.separatorStats.both.length, 'mixed', stats.separatorStats.both);
+        createStatLink(sepDetails, stats.separatorStats.none.length, 'none', stats.separatorStats.none);
 
         // Special characters
-        const specialBox = metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        const specialBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         specialBox.createDiv({ text: 'Clean Tags', cls: 'btm-metric-label' });
         this.createProgressBar(specialBox, stats.specialCharStats.consistency);
         const specialDetails = specialBox.createDiv({ cls: 'btm-metric-details' });
-        specialDetails.createSpan({ text: `${stats.specialCharStats.clean} clean` });
-        if (stats.specialCharStats.withSpecial > 0) {
-            specialDetails.createSpan({ text: `${stats.specialCharStats.withSpecial} with special chars` });
+        createStatLink(specialDetails, stats.specialCharStats.clean.length, 'clean', stats.specialCharStats.clean);
+        createStatLink(specialDetails, stats.specialCharStats.withSpecial.length, 'with special chars', stats.specialCharStats.withSpecial);
+
+        // Hierarchical stats
+        const nestBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        nestBox.createDiv({ text: 'Hierarchy', cls: 'btm-metric-label' });
+        const nestDetails = nestBox.createDiv({ cls: 'btm-metric-details' });
+        createStatLink(nestDetails, stats.nestingStats.flat.length, 'flat', stats.nestingStats.flat);
+
+        if (stats.inlineFiles.length > 0) {
+            const nestedLink = nestDetails.createEl('a', { text: `${stats.inlineFiles.length} notes with inline tags`, cls: 'btm-stat-link' });
+            nestedLink.onclick = () => {
+                this.close();
+                new InlineTagsModal(this.app, stats.inlineFiles).open();
+            };
+        } else {
+            nestDetails.createSpan({ text: '0 notes with inline tags' });
         }
 
-        // Nesting stats
-        const nestBox = metricsGrid.createDiv({ cls: 'btm-metric-box' });
-        nestBox.createDiv({ text: 'Structure', cls: 'btm-metric-label' });
-        const nestDetails = nestBox.createDiv({ cls: 'btm-metric-details' });
-        nestDetails.createSpan({ text: `${stats.nestingStats.flat} flat` });
-        nestDetails.createSpan({ text: `${stats.nestingStats.nested} nested` });
-        if (stats.nestingStats.maxDepth > 1) {
-            nestDetails.createSpan({ text: `max depth: ${stats.nestingStats.maxDepth}` });
+        if (stats.nestedFiles.length > 0) {
+            const realNestedLink = nestDetails.createEl('a', { text: `${stats.nestedFiles.length} with nested tags`, cls: 'btm-stat-link' });
+            realNestedLink.onclick = () => {
+                this.close();
+                new NestedFilesModal(this.app, stats.nestedFiles).open();
+            };
+        } else {
+            nestDetails.createSpan({ text: '0 with nested tags' });
         }
+
+        // Location Stats (Body vs Frontmatter)
+        const locBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        locBox.createDiv({ text: 'Locations', cls: 'btm-metric-label' });
+        const locDetails = locBox.createDiv({ cls: 'btm-metric-details' });
+        createStatLink(locDetails, stats.locationStats.frontmatter.length, 'frontmatter', stats.locationStats.frontmatter);
+        createStatLink(locDetails, stats.locationStats.body.length, 'body', stats.locationStats.body);
 
         // Length stats
-        const lengthBox = metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        const lengthBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         lengthBox.createDiv({ text: 'Length', cls: 'btm-metric-label' });
         const lengthDetails = lengthBox.createDiv({ cls: 'btm-metric-details' });
-        lengthDetails.createSpan({ text: `avg: ${stats.lengthStats.avgLength} chars` });
-        if (stats.lengthStats.long > 0) {
-            lengthDetails.createSpan({ text: `${stats.lengthStats.long} long (>25)` });
+        lengthDetails.createSpan({ text: `avg: ${stats.lengthStats.avgLength} chars ` });
+        createStatLink(lengthDetails, stats.lengthStats.long.length, 'long (>25)', stats.lengthStats.long);
+
+        // Async check for invalid tags
+        this.checkInvalidTags();
+        this.checkEmptyTags();
+    }
+
+
+    async checkEmptyTags() {
+        const emptyFiles = await this.plugin.findEmptyTags();
+        if (emptyFiles.length > 0) {
+            // Append to metricsGrid to ensure uniform spacing
+            // Note: metricsGrid ensures grid layout
+            if (this.metricsGrid) {
+                const emptyBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box btm-info-box' });
+                emptyBox.createDiv({ text: 'Empty Tags', cls: 'btm-metric-label' });
+                const detail = emptyBox.createDiv({ cls: 'btm-metric-details' });
+                const link = detail.createEl('a', { text: `${emptyFiles.length} files` });
+                link.onclick = () => {
+                    this.close();
+                    new EmptyTagsModal(this.app, emptyFiles).open();
+                };
+            }
+        }
+    }
+    async checkInvalidTags() {
+        const invalidFiles = await this.plugin.findInvalidTagFormats();
+
+        if (invalidFiles.length > 0) {
+            // Find or create the invalid tags section
+            let invalidSection = this.statsEl.querySelector('.btm-invalid-section');
+            if (!invalidSection) {
+                invalidSection = this.statsEl.createDiv({ cls: 'btm-invalid-section' });
+            }
+            invalidSection.empty();
+
+            const warningRow = (invalidSection as HTMLElement).createDiv({ cls: 'btm-invalid-warning' });
+            const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
+            setIcon(iconEl, 'alert-triangle');
+            warningRow.createSpan({ text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? 's' : ''} with invalid tag format` });
+
+            const viewBtn = warningRow.createEl('button', { text: 'View', cls: 'btm-view-invalid-btn' });
+            viewBtn.onclick = () => {
+                this.close();
+                new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
+            };
         }
     }
 
-    createProgressBar(container: HTMLElement, percentage: number) {
-        const barContainer = container.createDiv({ cls: 'btm-progress-container' });
-        const bar = barContainer.createDiv({ cls: 'btm-progress-bar' });
-        bar.style.width = `${percentage}%`;
 
-        // Color based on percentage
-        if (percentage >= 90) bar.addClass('btm-progress-good');
-        else if (percentage >= 70) bar.addClass('btm-progress-ok');
-        else bar.addClass('btm-progress-warn');
-
-        barContainer.createSpan({ text: `${percentage}%`, cls: 'btm-progress-label' });
-    }
 
 
     onClose() {
@@ -1892,6 +2482,18 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.applyToNestedTags)
                 .onChange(async (value) => {
                     this.plugin.settings.applyToNestedTags = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Tag Output Format')
+            .setDesc('Format for writing tags to frontmatter')
+            .addDropdown(dropdown => dropdown
+                .addOption('inline', 'Inline Array [tag1, tag2]')
+                .addOption('list', 'YAML List (- tag1)')
+                .setValue(this.plugin.settings.tagFormat)
+                .onChange(async (value: TagLowercaseSettings['tagFormat']) => {
+                    this.plugin.settings.tagFormat = value;
                     await this.plugin.saveSettings();
                 }));
 

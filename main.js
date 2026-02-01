@@ -33,6 +33,7 @@ var DEFAULT_SETTINGS = {
   separatorStrategy: "preserve",
   removeSpecialChars: false,
   applyToNestedTags: true,
+  tagFormat: "inline",
   aliases: {},
   operationHistory: [],
   scopeFilter: {
@@ -573,25 +574,21 @@ ${sortedTags.join("\n")}
     const tags = this.app.metadataCache.getTags() || {};
     return Object.entries(tags).filter(([, count]) => count < this.settings.orphanThreshold).map(([tag, count]) => ({ tag, count })).sort((a, b) => a.count - b.count);
   }
-  analyzeTagStandardization() {
+  analyzeTagStandardization(files) {
     const tags = Object.keys(this.app.metadataCache.getTags() || {});
     const totalTags = tags.length;
-    if (totalTags === 0) {
-      return {
-        totalTags: 0,
-        caseStats: { lowercase: 0, uppercase: 0, mixed: 0, consistency: 100 },
-        separatorStats: { underscore: 0, hyphen: 0, both: 0, none: 0, consistency: 100 },
-        specialCharStats: { withSpecial: 0, clean: 0, consistency: 100 },
-        nestingStats: { nested: 0, flat: 0, maxDepth: 0 },
-        lengthStats: { short: 0, medium: 0, long: 0, avgLength: 0 }
-      };
-    }
-    let lowercase = 0, uppercase = 0, mixedCase = 0;
-    let underscore = 0, hyphen = 0, bothSeparators = 0, noSeparator = 0;
-    let withSpecial = 0, clean = 0;
-    let nested = 0, flat = 0;
-    let maxDepth = 0;
-    let short = 0, medium = 0, long = 0;
+    const stats = {
+      totalTags,
+      caseStats: { lowercase: [], uppercase: [], mixed: [], consistency: 100 },
+      separatorStats: { underscore: [], hyphen: [], both: [], none: [], consistency: 100 },
+      specialCharStats: { withSpecial: [], clean: [], consistency: 100 },
+      nestingStats: { nested: [], flat: [], maxDepth: 0 },
+      lengthStats: { short: [], medium: [], long: [], avgLength: 0 },
+      locationStats: { frontmatter: [], body: [] },
+      inlineFiles: [],
+      nestedFiles: []
+    };
+    if (totalTags === 0) return stats;
     let totalLength = 0;
     for (const tag of tags) {
       const rawTag = tag.startsWith("#") ? tag.substring(1) : tag;
@@ -599,68 +596,199 @@ ${sortedTags.join("\n")}
       if (letters.length > 0) {
         const isAllLower = letters === letters.toLowerCase();
         const isAllUpper = letters === letters.toUpperCase();
-        if (isAllLower && !isAllUpper) lowercase++;
-        else if (isAllUpper && !isAllLower) uppercase++;
-        else mixedCase++;
+        if (isAllLower && !isAllUpper) stats.caseStats.lowercase.push(tag);
+        else if (isAllUpper && !isAllLower) stats.caseStats.uppercase.push(tag);
+        else stats.caseStats.mixed.push(tag);
       } else {
-        lowercase++;
+        stats.caseStats.lowercase.push(tag);
       }
       const hasUnderscore = rawTag.includes("_");
       const hasHyphen = rawTag.includes("-");
-      if (hasUnderscore && hasHyphen) bothSeparators++;
-      else if (hasUnderscore) underscore++;
-      else if (hasHyphen) hyphen++;
-      else noSeparator++;
+      if (hasUnderscore && hasHyphen) stats.separatorStats.both.push(tag);
+      else if (hasUnderscore) stats.separatorStats.underscore.push(tag);
+      else if (hasHyphen) stats.separatorStats.hyphen.push(tag);
+      else stats.separatorStats.none.push(tag);
       const hasSpecial = /[^a-zA-Z0-9_\-\/]/.test(rawTag);
-      if (hasSpecial) withSpecial++;
-      else clean++;
+      if (hasSpecial) stats.specialCharStats.withSpecial.push(tag);
+      else stats.specialCharStats.clean.push(tag);
       const depth = (rawTag.match(/\//g) || []).length + 1;
-      if (depth > 1) nested++;
-      else flat++;
-      maxDepth = Math.max(maxDepth, depth);
+      if (depth > 1) stats.nestingStats.nested.push(tag);
+      else stats.nestingStats.flat.push(tag);
+      stats.nestingStats.maxDepth = Math.max(stats.nestingStats.maxDepth, depth);
       totalLength += rawTag.length;
-      if (rawTag.length <= 10) short++;
-      else if (rawTag.length <= 25) medium++;
-      else long++;
+      if (rawTag.length <= 10) stats.lengthStats.short.push(tag);
+      else if (rawTag.length <= 25) stats.lengthStats.medium.push(tag);
+      else stats.lengthStats.long.push(tag);
     }
-    const dominantCase = Math.max(lowercase, uppercase, mixedCase);
-    const caseConsistency = totalTags > 0 ? Math.round(dominantCase / totalTags * 100) : 100;
-    const separatorCounts = [underscore, hyphen, noSeparator];
-    const dominantSeparator = Math.max(...separatorCounts);
-    const separatorConsistency = totalTags > 0 ? Math.round((dominantSeparator + (bothSeparators === 0 ? 0 : 0)) / totalTags * 100) : 100;
-    const specialConsistency = totalTags > 0 ? Math.round(clean / totalTags * 100) : 100;
-    return {
-      totalTags,
-      caseStats: {
-        lowercase,
-        uppercase,
-        mixed: mixedCase,
-        consistency: caseConsistency
-      },
-      separatorStats: {
-        underscore,
-        hyphen,
-        both: bothSeparators,
-        none: noSeparator,
-        consistency: separatorConsistency
-      },
-      specialCharStats: {
-        withSpecial,
-        clean,
-        consistency: specialConsistency
-      },
-      nestingStats: {
-        nested,
-        flat,
-        maxDepth
-      },
-      lengthStats: {
-        short,
-        medium,
-        long,
-        avgLength: Math.round(totalLength / totalTags)
+    const fmTags = /* @__PURE__ */ new Set();
+    const bodyTags = /* @__PURE__ */ new Set();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) continue;
+      const fileInlineSet = /* @__PURE__ */ new Set();
+      const fileNestedSet = /* @__PURE__ */ new Set();
+      const fm = cache.frontmatter;
+      if (fm) {
+        let list = [];
+        if (fm.tags) {
+          if (typeof fm.tags === "string") list = fm.tags.split(",").map((t) => t.trim());
+          else if (Array.isArray(fm.tags)) list = fm.tags.map((t) => String(t));
+        }
+        if (fm.tag) {
+          if (typeof fm.tag === "string") list = list.concat([fm.tag]);
+          else if (Array.isArray(fm.tag)) list = list.concat(fm.tag.map((t) => String(t)));
+        }
+        list.forEach((t) => {
+          const clean = t.startsWith("#") ? t.substring(1) : t;
+          fmTags.add(clean);
+          if (clean.includes("/")) fileNestedSet.add(clean);
+        });
       }
+      if (cache.tags) {
+        cache.tags.forEach((t) => {
+          const clean = t.tag.startsWith("#") ? t.tag.substring(1) : t.tag;
+          bodyTags.add(clean);
+          fileInlineSet.add(clean);
+          if (clean.includes("/")) fileNestedSet.add(clean);
+        });
+      }
+      if (fileInlineSet.size > 0) {
+        stats.inlineFiles.push({
+          file,
+          count: fileInlineSet.size,
+          tags: Array.from(fileInlineSet).sort()
+        });
+      }
+      if (fileNestedSet.size > 0) {
+        stats.nestedFiles.push({
+          file,
+          count: fileNestedSet.size,
+          tags: Array.from(fileNestedSet).sort()
+        });
+      }
+    }
+    stats.locationStats.frontmatter = Array.from(fmTags).sort();
+    stats.locationStats.body = Array.from(bodyTags).sort();
+    stats.lengthStats.avgLength = Math.round(totalLength / totalTags);
+    const calcConsistency = (arrays) => {
+      const dominant = Math.max(...arrays.map((a) => a.length));
+      return Math.round(dominant / totalTags * 100);
     };
+    stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
+    const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
+    const dominantSep = Math.max(...sepArrays.map((a) => a.length));
+    stats.separatorStats.consistency = Math.round((dominantSep + (stats.separatorStats.both.length === 0 ? 0 : 0)) / totalTags * 100);
+    stats.specialCharStats.consistency = Math.round(stats.specialCharStats.clean.length / totalTags * 100);
+    return stats;
+  }
+  async findInvalidTagFormats() {
+    const invalidFiles = [];
+    const files = this.getFilteredFiles();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!(cache == null ? void 0 : cache.frontmatter)) continue;
+      const issues = [];
+      const fm = cache.frontmatter;
+      const checkKey = (key, value) => {
+        if (value === void 0 || value === null) return;
+        if (typeof value === "string") {
+          if (value.includes(",")) {
+            issues.push(`"${key}" uses comma-separated format instead of YAML array`);
+          } else if (value.trim().length > 0 && value.trim().includes(" ")) {
+            issues.push(`"${key}" contains spaces - may be invalid`);
+          }
+        } else if (Array.isArray(value)) {
+          value.forEach((t) => {
+            if (typeof t === "string" && t.trim().includes(" ")) {
+              issues.push(`Tag "${t}" contains spaces`);
+            }
+          });
+        }
+      };
+      if ("tags" in fm) checkKey("tags", fm.tags);
+      if ("tag" in fm) checkKey("tag", fm.tag);
+      if (issues.length > 0) {
+        invalidFiles.push({
+          path: file.path,
+          file,
+          issues
+        });
+      }
+    }
+    return invalidFiles;
+  }
+  async findEmptyTags() {
+    const emptyFiles = [];
+    const files = this.getFilteredFiles();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!(cache == null ? void 0 : cache.frontmatter)) continue;
+      const fm = cache.frontmatter;
+      if ("tags" in fm) {
+        const val = fm.tags;
+        if (val === null || val === void 0 || Array.isArray(val) && val.length === 0) {
+          emptyFiles.push(file);
+        }
+      }
+    }
+    return emptyFiles;
+  }
+  async fixAndStandardizeTags(file) {
+    var _a;
+    let modified = false;
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      if (fm.tags) {
+        if (typeof fm.tags === "string") {
+          fm.tags = fm.tags.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
+          modified = true;
+        }
+      }
+    });
+    if (this.settings.tagFormat === "inline") {
+      const content = await this.app.vault.read(file);
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const originalFm = fmMatch[1];
+        const listPattern = /^(tags?):\s*(?:\n\s*-.*)+/m;
+        if (listPattern.test(originalFm)) {
+          const cache = this.app.metadataCache.getFileCache(file);
+          const tags = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.tags;
+          if (Array.isArray(tags)) {
+            const inlineString = `tags: [${tags.join(", ")}]`;
+            const newFm = originalFm.replace(listPattern, inlineString);
+            const newContent = content.replace(originalFm, newFm);
+            if (newContent !== content) {
+              await this.app.vault.modify(file, newContent);
+              modified = true;
+            }
+          }
+        }
+      }
+    }
+    return modified;
+  }
+  async standardizeAllTags() {
+    const files = this.getFilteredFiles();
+    if (files.length === 0) {
+      new import_obsidian.Notice("No files to standardize.");
+      return;
+    }
+    const progressModal = new ProgressModal(this.app, files.length);
+    progressModal.open();
+    let count = 0;
+    let modifiedCount = 0;
+    for (const file of files) {
+      try {
+        await this.fixAndStandardizeTags(file);
+        modifiedCount++;
+        count++;
+        progressModal.update(count);
+      } catch (e) {
+        console.error(`Failed to standardize ${file.path}`, e);
+      }
+    }
+    progressModal.close();
+    new import_obsidian.Notice(`Standardization check complete on ${count} files.`);
   }
   // --- Aliases ---
   async applyAliases(file) {
@@ -900,6 +1028,224 @@ var TagHierarchyModal = class extends import_obsidian.Modal {
     this.contentEl.empty();
   }
 };
+var InvalidTagsModal = class extends import_obsidian.Modal {
+  constructor(app, plugin, invalidFiles) {
+    super(app);
+    this.plugin = plugin;
+    this.invalidFiles = invalidFiles;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("btm-invalid-modal");
+    new import_obsidian.Setting(contentEl).setName("Files with Invalid Tag Format").setDesc(`${this.invalidFiles.length} file${this.invalidFiles.length > 1 ? "s" : ""} found with tag format issues`).setHeading();
+    const listEl = contentEl.createDiv({ cls: "btm-invalid-list" });
+    for (const item of this.invalidFiles) {
+      const itemEl = listEl.createDiv({ cls: "btm-invalid-item" });
+      const headerEl = itemEl.createDiv({ cls: "btm-invalid-item-header" });
+      const iconEl = headerEl.createSpan({ cls: "btm-icon" });
+      (0, import_obsidian.setIcon)(iconEl, "file-warning");
+      const linkEl = headerEl.createEl("a", {
+        text: item.path,
+        cls: "btm-invalid-file-link"
+      });
+      linkEl.onclick = (e) => {
+        e.preventDefault();
+        this.close();
+        this.app.workspace.openLinkText(item.path, "", false);
+      };
+      const fixBtn = headerEl.createEl("button", { text: "Fix", cls: "btm-view-invalid-btn" });
+      fixBtn.onclick = async () => {
+        await this.plugin.fixAndStandardizeTags(item.file);
+        new import_obsidian.Notice(`Fixed tags in ${item.file.basename}`);
+        itemEl.remove();
+      };
+      const issuesEl = itemEl.createDiv({ cls: "btm-invalid-issues" });
+      for (const issue of item.issues) {
+        const issueEl = issuesEl.createDiv({ cls: "btm-invalid-issue" });
+        const issueIcon = issueEl.createSpan({ cls: "btm-icon" });
+        (0, import_obsidian.setIcon)(issueIcon, "alert-circle");
+        issueEl.createSpan({ text: " " + issue });
+      }
+    }
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
+    const fixAllBtn = btnRow.createEl("button", { text: "Fix All", cls: "mod-cta" });
+    fixAllBtn.onclick = async () => {
+      const progressModal = new ProgressModal(this.app, this.invalidFiles.length);
+      progressModal.open();
+      let count = 0;
+      for (const item of this.invalidFiles) {
+        try {
+          await this.plugin.fixAndStandardizeTags(item.file);
+          count++;
+          progressModal.update(count);
+        } catch (e) {
+          console.error("Failed to fix " + item.path, e);
+        }
+      }
+      progressModal.close();
+      new import_obsidian.Notice(`Fixed tags in ${count} files.`);
+      this.close();
+    };
+    const closeBtn = btnRow.createEl("button", { text: "Close" });
+    closeBtn.onclick = () => this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var EmptyTagsModal = class extends import_obsidian.Modal {
+  constructor(app, emptyFiles) {
+    super(app);
+    this.emptyFiles = emptyFiles;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("btm-invalid-modal");
+    new import_obsidian.Setting(contentEl).setName("Files with Empty Tags").setDesc(`${this.emptyFiles.length} file${this.emptyFiles.length > 1 ? "s" : ""} found`).setHeading();
+    const listEl = contentEl.createDiv({ cls: "btm-invalid-list" });
+    for (const file of this.emptyFiles) {
+      const itemEl = listEl.createDiv({ cls: "btm-invalid-item" });
+      const headerEl = itemEl.createDiv({ cls: "btm-invalid-item-header" });
+      const iconEl = headerEl.createSpan({ cls: "btm-icon" });
+      (0, import_obsidian.setIcon)(iconEl, "file");
+      const linkEl = headerEl.createEl("a", {
+        text: file.path,
+        cls: "btm-invalid-file-link"
+      });
+      linkEl.onclick = (e) => {
+        e.preventDefault();
+        this.close();
+        this.app.workspace.openLinkText(file.path, "", false);
+      };
+    }
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
+    const closeBtn = btnRow.createEl("button", { text: "Close" });
+    closeBtn.onclick = () => this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var InlineTagsModal = class extends import_obsidian.Modal {
+  constructor(app, inlineFiles) {
+    super(app);
+    this.inlineFiles = inlineFiles;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("btm-invalid-modal");
+    new import_obsidian.Setting(contentEl).setName("Notes with Inline Tags").setDesc(`${this.inlineFiles.length} notes found with tags in body`).setHeading();
+    const listEl = contentEl.createDiv({ cls: "btm-invalid-list" });
+    for (const item of this.inlineFiles) {
+      const itemEl = listEl.createDiv({ cls: "btm-invalid-item" });
+      const headerEl = itemEl.createDiv({ cls: "btm-invalid-item-header" });
+      const iconEl = headerEl.createSpan({ cls: "btm-icon" });
+      (0, import_obsidian.setIcon)(iconEl, "file-text");
+      const titleEl = headerEl.createEl("a", {
+        text: item.file.basename,
+        cls: "btm-invalid-file-link"
+      });
+      titleEl.onclick = () => {
+        this.close();
+        this.app.workspace.openLinkText(item.file.path, "", false);
+      };
+      const countSpan = headerEl.createSpan({ text: ` \u2014 ${item.count} inline tags`, cls: "btm-highlight" });
+      countSpan.style.marginLeft = "10px";
+      countSpan.style.fontSize = "12px";
+      const tagsEl = itemEl.createDiv({ cls: "btm-metric-details" });
+      tagsEl.style.marginTop = "8px";
+      for (const tag of item.tags) {
+        tagsEl.createSpan({ text: "#" + tag });
+      }
+    }
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
+    const closeBtn = btnRow.createEl("button", { text: "Close" });
+    closeBtn.onclick = () => this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var NestedFilesModal = class extends import_obsidian.Modal {
+  constructor(app, nestedFiles) {
+    super(app);
+    this.nestedFiles = nestedFiles;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("btm-invalid-modal");
+    new import_obsidian.Setting(contentEl).setName("Notes with Nested Tags").setDesc(`${this.nestedFiles.length} notes found containing hierarchical tags`).setHeading();
+    const listEl = contentEl.createDiv({ cls: "btm-invalid-list" });
+    for (const item of this.nestedFiles) {
+      const itemEl = listEl.createDiv({ cls: "btm-invalid-item" });
+      const headerEl = itemEl.createDiv({ cls: "btm-invalid-item-header" });
+      const iconEl = headerEl.createSpan({ cls: "btm-icon" });
+      (0, import_obsidian.setIcon)(iconEl, "file-text");
+      const titleEl = headerEl.createEl("a", {
+        text: item.file.basename,
+        cls: "btm-invalid-file-link"
+      });
+      titleEl.onclick = () => {
+        this.close();
+        this.app.workspace.openLinkText(item.file.path, "", false);
+      };
+      const countSpan = headerEl.createSpan({ text: ` \u2014 ${item.count} nested tags`, cls: "btm-highlight" });
+      countSpan.style.marginLeft = "10px";
+      countSpan.style.fontSize = "12px";
+      const tagsEl = itemEl.createDiv({ cls: "btm-metric-details" });
+      tagsEl.style.marginTop = "8px";
+      for (const tag of item.tags) {
+        tagsEl.createSpan({ text: "#" + tag });
+      }
+    }
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
+    const closeBtn = btnRow.createEl("button", { text: "Close" });
+    closeBtn.onclick = () => this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var TagListModal = class extends import_obsidian.Modal {
+  constructor(app, title, tags) {
+    super(app);
+    this.title = title;
+    this.tags = tags;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("btm-tag-list-modal");
+    new import_obsidian.Setting(contentEl).setName(this.title).setDesc(`${this.tags.length} tags found`).setHeading();
+    const listEl = contentEl.createDiv({ cls: "btm-invalid-list" });
+    for (const tag of this.tags) {
+      const itemEl = listEl.createDiv({ cls: "btm-invalid-item btm-tag-item" });
+      const tagText = tag.startsWith("#") ? tag : "#" + tag;
+      const tagEl = itemEl.createSpan({ text: tagText, cls: "btm-tag-pill" });
+      const btn = itemEl.createEl("button", { text: "Search", cls: "btm-search-btn" });
+      btn.onclick = () => {
+        var _a;
+        this.close();
+        const searchPlugin = (_a = this.app.internalPlugins) == null ? void 0 : _a.getPluginById("global-search");
+        if (searchPlugin == null ? void 0 : searchPlugin.instance) {
+          searchPlugin.instance.openGlobalSearch(`tag:${tagText}`);
+        } else {
+          new import_obsidian.Notice("Global Search plugin not enabled");
+        }
+      };
+    }
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
+    const closeBtn = btnRow.createEl("button", { text: "Close" });
+    closeBtn.onclick = () => this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
 var OrphanTagsModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
     super(app);
@@ -1099,6 +1445,7 @@ var FolderSelectModal = class extends import_obsidian.Modal {
   }
 };
 var TagManagerModal = class extends import_obsidian.Modal {
+  // For layout consistency
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -1108,27 +1455,44 @@ var TagManagerModal = class extends import_obsidian.Modal {
     contentEl.empty();
     contentEl.addClass("btm-dashboard");
     new import_obsidian.Setting(contentEl).setName("Bulk Tag Manager").setHeading();
-    this.statsEl = contentEl.createDiv({ cls: "btm-stats" });
+    const overviewBox = contentEl.createDiv({ cls: "btm-section-box" });
+    const overviewHeader = overviewBox.createDiv({ cls: "btm-collapsible-header" });
+    overviewHeader.createSpan({ text: "Overview (Stats)" });
+    const arrow = overviewHeader.createSpan({ cls: "btm-header-arrow" });
+    (0, import_obsidian.setIcon)(arrow, "chevron-down");
+    this.statsEl = overviewBox.createDiv({ cls: "btm-collapsible-content" });
     this.updateStats();
-    contentEl.createEl("hr");
-    new import_obsidian.Setting(contentEl).setName("Rename Tag").setHeading();
-    const renameContainer = contentEl.createDiv({ cls: "btm-input-row" });
-    const findDiv = renameContainer.createDiv({ cls: "btm-input-group" });
-    findDiv.createEl("label", { text: "Find" });
-    this.findInput = new import_obsidian.TextComponent(findDiv).setPlaceholder("#old-tag");
-    const findSuggestBtn = findDiv.createEl("button", { cls: "btm-suggest-btn btm-icon-btn" });
+    let isExpanded = true;
+    overviewHeader.onclick = () => {
+      isExpanded = !isExpanded;
+      if (isExpanded) {
+        this.statsEl.removeClass("is-collapsed");
+        arrow.removeClass("is-collapsed");
+      } else {
+        this.statsEl.addClass("is-collapsed");
+        arrow.addClass("is-collapsed");
+      }
+    };
+    const renameBox = contentEl.createDiv({ cls: "btm-section-box" });
+    renameBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Rename Tag" });
+    const renameContainer = renameBox.createDiv({ cls: "btm-aligned-row" });
+    const findCol = renameContainer.createDiv({ cls: "btm-field-column" });
+    findCol.createEl("label", { text: "Find" });
+    this.findInput = new import_obsidian.TextComponent(findCol).setPlaceholder("#old-tag");
+    const findSuggestBtn = findCol.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(findSuggestBtn, "search");
-    const tagCountDisplay = findDiv.createDiv({ cls: "btm-tag-count-display" });
+    findSuggestBtn.createSpan({ text: " Search" });
+    const tagCountDisplay = findCol.createDiv({ cls: "btm-tag-count-display", attr: { style: "font-size: 11px; margin-top: 4px; color: var(--text-muted);" } });
     findSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
       this.findInput.setValue(t);
       const tags = this.plugin.app.metadataCache.getTags() || {};
       const count = tags["#" + t] || 0;
-      tagCountDisplay.textContent = `${count} occurrence${count === 1 ? "" : "s"}`;
+      tagCountDisplay.textContent = `${count} pos`;
     }).open();
-    const replaceDiv = renameContainer.createDiv({ cls: "btm-input-group" });
-    replaceDiv.createEl("label", { text: "Replace" });
-    this.replaceInput = new import_obsidian.TextComponent(replaceDiv).setPlaceholder("#new-tag");
-    const btnRename = renameContainer.createEl("button", { text: "Rename", cls: "mod-cta" });
+    const replaceCol = renameContainer.createDiv({ cls: "btm-field-column" });
+    replaceCol.createEl("label", { text: "Replace" });
+    this.replaceInput = new import_obsidian.TextComponent(replaceCol).setPlaceholder("#new-tag");
+    const btnRename = renameContainer.createEl("button", { text: "Rename", cls: "mod-cta btm-action-btn" });
     btnRename.onclick = async () => {
       const oldT = this.findInput.getValue();
       const newT = this.replaceInput.getValue();
@@ -1139,25 +1503,26 @@ var TagManagerModal = class extends import_obsidian.Modal {
         new import_obsidian.Notice("Please fill both fields.");
       }
     };
-    contentEl.createEl("hr");
-    new import_obsidian.Setting(contentEl).setName("Merge Tags").setDesc("Combine multiple tags into one").setHeading();
-    const mergeContainer = contentEl.createDiv({ cls: "btm-input-row" });
-    const sourcesDiv = mergeContainer.createDiv({ cls: "btm-input-group btm-wide" });
-    sourcesDiv.createEl("label", { text: "Source tags" });
-    this.mergeSourcesInput = new import_obsidian.TextComponent(sourcesDiv).setPlaceholder("#tag1, #tag2, #tag3");
-    const selectTagsBtn = sourcesDiv.createEl("button", { cls: "btm-suggest-btn btm-icon-btn" });
+    const mergeBox = contentEl.createDiv({ cls: "btm-section-box" });
+    mergeBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Merge Tags" });
+    const mergeContainer = mergeBox.createDiv({ cls: "btm-aligned-row" });
+    const sourceCol = mergeContainer.createDiv({ cls: "btm-field-column" });
+    sourceCol.createEl("label", { text: "Source tags" });
+    this.mergeSourcesInput = new import_obsidian.TextComponent(sourceCol).setPlaceholder("#tag1, #tag2");
+    const selectTagsBtn = sourceCol.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(selectTagsBtn, "list-filter");
     selectTagsBtn.createSpan({ text: " Select" });
     selectTagsBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
       this.mergeSourcesInput.setValue(tags.map((t) => "#" + t).join(", "));
     }).open();
-    const targetDiv = mergeContainer.createDiv({ cls: "btm-input-group" });
-    targetDiv.createEl("label", { text: "Target" });
-    this.mergeTargetInput = new import_obsidian.TextComponent(targetDiv).setPlaceholder("#merged");
-    const targetSuggestBtn = targetDiv.createEl("button", { cls: "btm-suggest-btn btm-icon-btn" });
+    const targetCol = mergeContainer.createDiv({ cls: "btm-field-column" });
+    targetCol.createEl("label", { text: "Target" });
+    this.mergeTargetInput = new import_obsidian.TextComponent(targetCol).setPlaceholder("#merged");
+    const targetSuggestBtn = targetCol.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(targetSuggestBtn, "search");
+    targetSuggestBtn.createSpan({ text: " Search" });
     targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => this.mergeTargetInput.setValue(t)).open();
-    const btnMerge = mergeContainer.createEl("button", { text: "Merge", cls: "mod-cta" });
+    const btnMerge = mergeContainer.createEl("button", { text: "Merge", cls: "mod-cta btm-action-btn" });
     btnMerge.onclick = async () => {
       const sources = this.mergeSourcesInput.getValue().split(",").map((s) => s.trim()).filter((s) => s);
       const target = this.mergeTargetInput.getValue().trim();
@@ -1168,16 +1533,16 @@ var TagManagerModal = class extends import_obsidian.Modal {
         new import_obsidian.Notice("Please provide source tags and a target.");
       }
     };
-    contentEl.createEl("hr");
-    new import_obsidian.Setting(contentEl).setName("Pattern Rename").setDesc("Use regex to rename tags").setHeading();
-    const patternContainer = contentEl.createDiv({ cls: "btm-input-row" });
-    const patternDiv = patternContainer.createDiv({ cls: "btm-input-group" });
-    patternDiv.createEl("label", { text: "Pattern (regex)" });
-    this.patternInput = new import_obsidian.TextComponent(patternDiv).setPlaceholder("^old-(.*)");
-    const patternReplaceDiv = patternContainer.createDiv({ cls: "btm-input-group" });
-    patternReplaceDiv.createEl("label", { text: "Replacement" });
-    this.patternReplaceInput = new import_obsidian.TextComponent(patternReplaceDiv).setPlaceholder("new-$1");
-    const btnPattern = patternContainer.createEl("button", { text: "Apply", cls: "mod-cta" });
+    const patternBox = contentEl.createDiv({ cls: "btm-section-box" });
+    patternBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Pattern Rename (Regex)" });
+    const patternContainer = patternBox.createDiv({ cls: "btm-aligned-row" });
+    const patternCol = patternContainer.createDiv({ cls: "btm-field-column" });
+    patternCol.createEl("label", { text: "Pattern" });
+    this.patternInput = new import_obsidian.TextComponent(patternCol).setPlaceholder("^old-(.*)");
+    const patternRepCol = patternContainer.createDiv({ cls: "btm-field-column" });
+    patternRepCol.createEl("label", { text: "Replacement" });
+    this.patternReplaceInput = new import_obsidian.TextComponent(patternRepCol).setPlaceholder("new-$1");
+    const btnPattern = patternContainer.createEl("button", { text: "Apply", cls: "mod-cta btm-action-btn" });
     btnPattern.onclick = async () => {
       const pattern = this.patternInput.getValue();
       const replacement = this.patternReplaceInput.getValue();
@@ -1188,97 +1553,97 @@ var TagManagerModal = class extends import_obsidian.Modal {
         new import_obsidian.Notice("Please provide a pattern.");
       }
     };
-    contentEl.createEl("hr");
-    new import_obsidian.Setting(contentEl).setName("Bulk Conversion Settings").setHeading();
-    new import_obsidian.Setting(contentEl).setName("Case Strategy").addDropdown((dropdown) => dropdown.addOption("lowercase", "Lowercase").addOption("uppercase", "Uppercase").addOption("none", "No Change").setValue(this.plugin.settings.caseStrategy).onChange(async (value) => {
+    const settingsBox = contentEl.createDiv({ cls: "btm-section-box" });
+    settingsBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Bulk Settings" });
+    new import_obsidian.Setting(settingsBox).setName("Case Strategy").addDropdown((dropdown) => dropdown.addOption("lowercase", "Lowercase").addOption("uppercase", "Uppercase").addOption("none", "No Change").setValue(this.plugin.settings.caseStrategy).onChange(async (value) => {
       this.plugin.settings.caseStrategy = value;
       await this.plugin.saveSettings();
       this.updateStats();
     }));
-    new import_obsidian.Setting(contentEl).setName("Separator Style").addDropdown((dropdown) => dropdown.addOption("preserve", "Preserve").addOption("snake", "Snake Case (- \u2192 _)").addOption("kebab", "Kebab Case (_ \u2192 -)").setValue(this.plugin.settings.separatorStrategy).onChange(async (value) => {
+    new import_obsidian.Setting(settingsBox).setName("Separator Style").addDropdown((dropdown) => dropdown.addOption("preserve", "Preserve").addOption("snake", "Snake Case").addOption("kebab", "Kebab Case").setValue(this.plugin.settings.separatorStrategy).onChange(async (value) => {
       this.plugin.settings.separatorStrategy = value;
       await this.plugin.saveSettings();
       this.updateStats();
     }));
-    new import_obsidian.Setting(contentEl).setName("Remove Special Characters").addToggle((toggle) => toggle.setValue(this.plugin.settings.removeSpecialChars).onChange(async (value) => {
+    new import_obsidian.Setting(settingsBox).setName("Remove Special Characters").addToggle((toggle) => toggle.setValue(this.plugin.settings.removeSpecialChars).onChange(async (value) => {
       this.plugin.settings.removeSpecialChars = value;
       await this.plugin.saveSettings();
       this.updateStats();
     }));
-    new import_obsidian.Setting(contentEl).setName("Apply to Nested Tags").addToggle((toggle) => toggle.setValue(this.plugin.settings.applyToNestedTags).onChange(async (value) => {
+    new import_obsidian.Setting(settingsBox).setName("Apply to Nested Tags").addToggle((toggle) => toggle.setValue(this.plugin.settings.applyToNestedTags).onChange(async (value) => {
       this.plugin.settings.applyToNestedTags = value;
       await this.plugin.saveSettings();
       this.updateStats();
     }));
-    contentEl.createEl("hr");
-    new import_obsidian.Setting(contentEl).setName("Scope Filter").setHeading();
-    new import_obsidian.Setting(contentEl).setName("Enable Scope Filter").setDesc("Limit operations to specific folders").addToggle((toggle) => toggle.setValue(this.plugin.settings.scopeFilter.enabled).onChange(async (value) => {
+    const scopeBox = contentEl.createDiv({ cls: "btm-section-box" });
+    scopeBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Scope Filter" });
+    new import_obsidian.Setting(scopeBox).setName("Enable Scope Filter").setDesc("Limit operations to specific folders").addToggle((toggle) => toggle.setValue(this.plugin.settings.scopeFilter.enabled).onChange(async (value) => {
       this.plugin.settings.scopeFilter.enabled = value;
       await this.plugin.saveSettings();
       this.updateStats();
     }));
-    const includeContainer = contentEl.createDiv({ cls: "btm-scope-row" });
-    includeContainer.createEl("label", { text: "Include Folders:" });
-    const includeDisplay = includeContainer.createDiv({ cls: "btm-folder-display" });
-    includeDisplay.textContent = this.plugin.settings.scopeFilter.includeFolders.join(", ") || "(all folders)";
-    const includeBtn = includeContainer.createEl("button", { cls: "btm-suggest-btn btm-icon-btn" });
+    const includeRow = scopeBox.createDiv({ cls: "btm-scope-row", attr: { style: "margin-bottom: 8px;" } });
+    includeRow.createSpan({ text: "Include: " });
+    const includeDisplay = includeRow.createSpan({ text: this.plugin.settings.scopeFilter.includeFolders.join(", ") || "(all)", cls: "btm-folder-display", attr: { style: "margin-right: 8px;" } });
+    const includeBtn = includeRow.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(includeBtn, "folder-plus");
     includeBtn.createSpan({ text: " Select" });
-    includeBtn.onclick = () => new FolderSelectModal(
-      this.app,
-      this.plugin,
-      this.plugin.settings.scopeFilter.includeFolders,
-      async (folders) => {
-        this.plugin.settings.scopeFilter.includeFolders = folders;
-        await this.plugin.saveSettings();
-        includeDisplay.textContent = folders.join(", ") || "(all folders)";
-        this.updateStats();
-      }
-    ).open();
-    const excludeContainer = contentEl.createDiv({ cls: "btm-scope-row" });
-    excludeContainer.createEl("label", { text: "Exclude Folders:" });
-    const excludeDisplay = excludeContainer.createDiv({ cls: "btm-folder-display" });
-    excludeDisplay.textContent = this.plugin.settings.scopeFilter.excludeFolders.join(", ") || "(none)";
-    const excludeBtn = excludeContainer.createEl("button", { cls: "btm-suggest-btn btm-icon-btn" });
+    includeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.includeFolders, async (f) => {
+      this.plugin.settings.scopeFilter.includeFolders = f;
+      await this.plugin.saveSettings();
+      includeDisplay.textContent = f.join(", ") || "(all)";
+      this.updateStats();
+    }).open();
+    const excludeRow = scopeBox.createDiv({ cls: "btm-scope-row" });
+    excludeRow.createSpan({ text: "Exclude: " });
+    const excludeDisplay = excludeRow.createSpan({ text: this.plugin.settings.scopeFilter.excludeFolders.join(", ") || "(none)", cls: "btm-folder-display", attr: { style: "margin-right: 8px;" } });
+    const excludeBtn = excludeRow.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(excludeBtn, "folder-minus");
     excludeBtn.createSpan({ text: " Select" });
-    excludeBtn.onclick = () => new FolderSelectModal(
-      this.app,
-      this.plugin,
-      this.plugin.settings.scopeFilter.excludeFolders,
-      async (folders) => {
-        this.plugin.settings.scopeFilter.excludeFolders = folders;
-        await this.plugin.saveSettings();
-        excludeDisplay.textContent = folders.join(", ") || "(none)";
-        this.updateStats();
-      }
-    ).open();
-    contentEl.createEl("hr");
-    const actionRow = contentEl.createDiv({ cls: "btm-action-row" });
+    excludeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.excludeFolders, async (f) => {
+      this.plugin.settings.scopeFilter.excludeFolders = f;
+      await this.plugin.saveSettings();
+      excludeDisplay.textContent = f.join(", ") || "(none)";
+      this.updateStats();
+    }).open();
+    const actionBox = contentEl.createDiv({ cls: "btm-section-box" });
+    actionBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Actions" });
+    const actionRow = actionBox.createDiv({ cls: "btm-action-row" });
     const btnConvert = this.createIconButton(actionRow, "refresh-cw", "Convert All", "mod-cta");
+    (0, import_obsidian.setTooltip)(btnConvert, "Run full conversion/standardization based on settings");
     btnConvert.onclick = async () => {
       this.close();
       await this.plugin.runConversionWithPreview();
     };
     const btnList = this.createIconButton(actionRow, "list", "Tag List");
+    (0, import_obsidian.setTooltip)(btnList, "View all tags in a list");
     btnList.onclick = async () => {
       this.close();
       await this.plugin.generateTagList();
     };
     const btnHierarchy = this.createIconButton(actionRow, "git-branch", "Hierarchy");
+    (0, import_obsidian.setTooltip)(btnHierarchy, "View tag hierarchy tree");
     btnHierarchy.onclick = () => {
       this.close();
       new TagHierarchyModal(this.app, this.plugin).open();
     };
     const btnOrphans = this.createIconButton(actionRow, "alert-circle", "Orphans");
+    (0, import_obsidian.setTooltip)(btnOrphans, "Find orphaned tags");
     btnOrphans.onclick = () => {
       this.close();
       new OrphanTagsModal(this.app, this.plugin).open();
     };
     const btnHistory = this.createIconButton(actionRow, "history", "History");
+    (0, import_obsidian.setTooltip)(btnHistory, "View and revert recent changes");
     btnHistory.onclick = () => {
       this.close();
       new HistoryModal(this.app, this.plugin).open();
+    };
+    const btnStandardize = this.createIconButton(actionRow, "check-square", "Fix Invalid");
+    (0, import_obsidian.setTooltip)(btnStandardize, "Standardize formats (commas/spaces)");
+    btnStandardize.onclick = async () => {
+      this.close();
+      await this.plugin.standardizeAllTags();
     };
   }
   createIconButton(container, iconName, text, cls = "") {
@@ -1288,11 +1653,19 @@ var TagManagerModal = class extends import_obsidian.Modal {
     btn.createSpan({ text: " " + text });
     return btn;
   }
+  createProgressBar(container, value) {
+    const bar = container.createDiv({ cls: "btm-progress-bar-mini" });
+    const fill = bar.createDiv({ cls: "btm-progress-fill-mini" });
+    fill.style.width = `${value}%`;
+    if (value < 50) fill.addClass("btm-progress-low");
+    else if (value < 80) fill.addClass("btm-progress-medium");
+    else fill.addClass("btm-progress-high");
+  }
   updateStats() {
     this.statsEl.empty();
     this.statsEl.addClass("btm-standardization-panel");
-    const stats = this.plugin.analyzeTagStandardization();
     const files = this.plugin.getFilteredFiles();
+    const stats = this.plugin.analyzeTagStandardization(files);
     const headerRow = this.statsEl.createDiv({ cls: "btm-stats-header" });
     const tagsItem = headerRow.createSpan({ cls: "btm-stat-item" });
     (0, import_obsidian.setIcon)(tagsItem.createSpan({ cls: "btm-stat-icon" }), "tags");
@@ -1300,54 +1673,106 @@ var TagManagerModal = class extends import_obsidian.Modal {
     const filesItem = headerRow.createSpan({ cls: "btm-stat-item" });
     (0, import_obsidian.setIcon)(filesItem.createSpan({ cls: "btm-stat-icon" }), "files");
     filesItem.createSpan({ text: ` ${files.length} files` });
-    const metricsGrid = this.statsEl.createDiv({ cls: "btm-metrics-grid" });
-    const caseBox = metricsGrid.createDiv({ cls: "btm-metric-box" });
+    this.metricsGrid = this.statsEl.createDiv({ cls: "btm-metrics-grid" });
+    const createStatLink = (container, count, label, tags) => {
+      if (count > 0) {
+        const link = container.createEl("a", { text: `${count} ${label}`, cls: "btm-stat-link" });
+        link.onclick = () => {
+          this.close();
+          new TagListModal(this.app, `${label} Tags`, tags).open();
+        };
+        container.appendText(" ");
+      }
+    };
+    const caseBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     caseBox.createDiv({ text: "Case", cls: "btm-metric-label" });
     this.createProgressBar(caseBox, stats.caseStats.consistency);
     const caseDetails = caseBox.createDiv({ cls: "btm-metric-details" });
-    if (stats.caseStats.lowercase > 0) caseDetails.createSpan({ text: `${stats.caseStats.lowercase} lower` });
-    if (stats.caseStats.uppercase > 0) caseDetails.createSpan({ text: `${stats.caseStats.uppercase} UPPER` });
-    if (stats.caseStats.mixed > 0) caseDetails.createSpan({ text: `${stats.caseStats.mixed} Mixed` });
-    const sepBox = metricsGrid.createDiv({ cls: "btm-metric-box" });
+    createStatLink(caseDetails, stats.caseStats.lowercase.length, "lower", stats.caseStats.lowercase);
+    createStatLink(caseDetails, stats.caseStats.uppercase.length, "UPPER", stats.caseStats.uppercase);
+    createStatLink(caseDetails, stats.caseStats.mixed.length, "Mixed", stats.caseStats.mixed);
+    const sepBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     sepBox.createDiv({ text: "Separators", cls: "btm-metric-label" });
     this.createProgressBar(sepBox, stats.separatorStats.consistency);
     const sepDetails = sepBox.createDiv({ cls: "btm-metric-details" });
-    if (stats.separatorStats.hyphen > 0) sepDetails.createSpan({ text: `${stats.separatorStats.hyphen} kebab-case` });
-    if (stats.separatorStats.underscore > 0) sepDetails.createSpan({ text: `${stats.separatorStats.underscore} snake_case` });
-    if (stats.separatorStats.both > 0) sepDetails.createSpan({ text: `${stats.separatorStats.both} mixed` });
-    if (stats.separatorStats.none > 0) sepDetails.createSpan({ text: `${stats.separatorStats.none} none` });
-    const specialBox = metricsGrid.createDiv({ cls: "btm-metric-box" });
+    createStatLink(sepDetails, stats.separatorStats.hyphen.length, "kebab-case", stats.separatorStats.hyphen);
+    createStatLink(sepDetails, stats.separatorStats.underscore.length, "snake_case", stats.separatorStats.underscore);
+    createStatLink(sepDetails, stats.separatorStats.both.length, "mixed", stats.separatorStats.both);
+    createStatLink(sepDetails, stats.separatorStats.none.length, "none", stats.separatorStats.none);
+    const specialBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     specialBox.createDiv({ text: "Clean Tags", cls: "btm-metric-label" });
     this.createProgressBar(specialBox, stats.specialCharStats.consistency);
     const specialDetails = specialBox.createDiv({ cls: "btm-metric-details" });
-    specialDetails.createSpan({ text: `${stats.specialCharStats.clean} clean` });
-    if (stats.specialCharStats.withSpecial > 0) {
-      specialDetails.createSpan({ text: `${stats.specialCharStats.withSpecial} with special chars` });
-    }
-    const nestBox = metricsGrid.createDiv({ cls: "btm-metric-box" });
-    nestBox.createDiv({ text: "Structure", cls: "btm-metric-label" });
+    createStatLink(specialDetails, stats.specialCharStats.clean.length, "clean", stats.specialCharStats.clean);
+    createStatLink(specialDetails, stats.specialCharStats.withSpecial.length, "with special chars", stats.specialCharStats.withSpecial);
+    const nestBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
+    nestBox.createDiv({ text: "Hierarchy", cls: "btm-metric-label" });
     const nestDetails = nestBox.createDiv({ cls: "btm-metric-details" });
-    nestDetails.createSpan({ text: `${stats.nestingStats.flat} flat` });
-    nestDetails.createSpan({ text: `${stats.nestingStats.nested} nested` });
-    if (stats.nestingStats.maxDepth > 1) {
-      nestDetails.createSpan({ text: `max depth: ${stats.nestingStats.maxDepth}` });
+    createStatLink(nestDetails, stats.nestingStats.flat.length, "flat", stats.nestingStats.flat);
+    if (stats.inlineFiles.length > 0) {
+      const nestedLink = nestDetails.createEl("a", { text: `${stats.inlineFiles.length} notes with inline tags`, cls: "btm-stat-link" });
+      nestedLink.onclick = () => {
+        this.close();
+        new InlineTagsModal(this.app, stats.inlineFiles).open();
+      };
+    } else {
+      nestDetails.createSpan({ text: "0 notes with inline tags" });
     }
-    const lengthBox = metricsGrid.createDiv({ cls: "btm-metric-box" });
+    if (stats.nestedFiles.length > 0) {
+      const realNestedLink = nestDetails.createEl("a", { text: `${stats.nestedFiles.length} with nested tags`, cls: "btm-stat-link" });
+      realNestedLink.onclick = () => {
+        this.close();
+        new NestedFilesModal(this.app, stats.nestedFiles).open();
+      };
+    } else {
+      nestDetails.createSpan({ text: "0 with nested tags" });
+    }
+    const locBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
+    locBox.createDiv({ text: "Locations", cls: "btm-metric-label" });
+    const locDetails = locBox.createDiv({ cls: "btm-metric-details" });
+    createStatLink(locDetails, stats.locationStats.frontmatter.length, "frontmatter", stats.locationStats.frontmatter);
+    createStatLink(locDetails, stats.locationStats.body.length, "body", stats.locationStats.body);
+    const lengthBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     lengthBox.createDiv({ text: "Length", cls: "btm-metric-label" });
     const lengthDetails = lengthBox.createDiv({ cls: "btm-metric-details" });
-    lengthDetails.createSpan({ text: `avg: ${stats.lengthStats.avgLength} chars` });
-    if (stats.lengthStats.long > 0) {
-      lengthDetails.createSpan({ text: `${stats.lengthStats.long} long (>25)` });
+    lengthDetails.createSpan({ text: `avg: ${stats.lengthStats.avgLength} chars ` });
+    createStatLink(lengthDetails, stats.lengthStats.long.length, "long (>25)", stats.lengthStats.long);
+    this.checkInvalidTags();
+    this.checkEmptyTags();
+  }
+  async checkEmptyTags() {
+    const emptyFiles = await this.plugin.findEmptyTags();
+    if (emptyFiles.length > 0) {
+      if (this.metricsGrid) {
+        const emptyBox = this.metricsGrid.createDiv({ cls: "btm-metric-box btm-info-box" });
+        emptyBox.createDiv({ text: "Empty Tags", cls: "btm-metric-label" });
+        const detail = emptyBox.createDiv({ cls: "btm-metric-details" });
+        const link = detail.createEl("a", { text: `${emptyFiles.length} files` });
+        link.onclick = () => {
+          this.close();
+          new EmptyTagsModal(this.app, emptyFiles).open();
+        };
+      }
     }
   }
-  createProgressBar(container, percentage) {
-    const barContainer = container.createDiv({ cls: "btm-progress-container" });
-    const bar = barContainer.createDiv({ cls: "btm-progress-bar" });
-    bar.style.width = `${percentage}%`;
-    if (percentage >= 90) bar.addClass("btm-progress-good");
-    else if (percentage >= 70) bar.addClass("btm-progress-ok");
-    else bar.addClass("btm-progress-warn");
-    barContainer.createSpan({ text: `${percentage}%`, cls: "btm-progress-label" });
+  async checkInvalidTags() {
+    const invalidFiles = await this.plugin.findInvalidTagFormats();
+    if (invalidFiles.length > 0) {
+      let invalidSection = this.statsEl.querySelector(".btm-invalid-section");
+      if (!invalidSection) {
+        invalidSection = this.statsEl.createDiv({ cls: "btm-invalid-section" });
+      }
+      invalidSection.empty();
+      const warningRow = invalidSection.createDiv({ cls: "btm-invalid-warning" });
+      const iconEl = warningRow.createSpan({ cls: "btm-icon" });
+      (0, import_obsidian.setIcon)(iconEl, "alert-triangle");
+      warningRow.createSpan({ text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? "s" : ""} with invalid tag format` });
+      const viewBtn = warningRow.createEl("button", { text: "View", cls: "btm-view-invalid-btn" });
+      viewBtn.onclick = () => {
+        this.close();
+        new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
+      };
+    }
   }
   onClose() {
     this.contentEl.empty();
@@ -1377,6 +1802,10 @@ var TagLowercaseSettingTab = class extends import_obsidian.PluginSettingTab {
     }));
     new import_obsidian.Setting(containerEl).setName("Apply to Nested Tags").addToggle((toggle) => toggle.setValue(this.plugin.settings.applyToNestedTags).onChange(async (value) => {
       this.plugin.settings.applyToNestedTags = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Tag Output Format").setDesc("Format for writing tags to frontmatter").addDropdown((dropdown) => dropdown.addOption("inline", "Inline Array [tag1, tag2]").addOption("list", "YAML List (- tag1)").setValue(this.plugin.settings.tagFormat).onChange(async (value) => {
+      this.plugin.settings.tagFormat = value;
       await this.plugin.saveSettings();
     }));
     new import_obsidian.Setting(containerEl).setName("Aliases").setHeading();
