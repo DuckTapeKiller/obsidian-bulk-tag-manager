@@ -6,8 +6,8 @@
 
 **Bulk Tag Manager** is a comprehensive tag management utility for Obsidian. It provides a unified, professional dashboard to rename, merge, standardize, and organize tags across your entire vault.
 
-> [!IMPORTANT]
-> I have added actions history and an "undo" option, so if you make a mistake, you can revert any actions performed with this plugin.
+> [!WARNING]
+> **Backup Required**: This plugin modifies files in bulk. Always backup your vault before running bulk operations.
 
 ---
 

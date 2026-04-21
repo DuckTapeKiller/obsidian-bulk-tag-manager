@@ -11,7 +11,7 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = (process.argv[2] === "production");
 
-const options = {
+const context = await esbuild.context({
     banner: {
         js: banner,
     },
@@ -38,12 +38,11 @@ const options = {
     sourcemap: prod ? false : "inline",
     treeShaking: true,
     outfile: "main.js",
-};
+});
 
 if (prod) {
-    await esbuild.build(options);
+    await context.rebuild();
     process.exit(0);
 } else {
-    const context = await esbuild.context(options);
     await context.watch();
 }

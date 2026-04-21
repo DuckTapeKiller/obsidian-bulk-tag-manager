@@ -612,27 +612,11 @@
 
 /* Modal Polish */
 .btm-section-box {
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--radius-m);
-    padding: 16px;
-    margin-bottom: 20px;
-    position: relative;
-    overflow: hidden;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.btm-section-box:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-.btm-bg-primary {
-    background: var(--background-primary);
-    border-left: 4px solid var(--interactive-accent);
-}
-
-.btm-bg-secondary {
     background: var(--background-secondary);
-    border-left: 4px solid var(--text-muted);
+    border: 2px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    padding: 16px;
+    margin-bottom: 16px;
 }
 
 .btm-collapsible-header {
@@ -657,152 +641,11 @@
     display: none;
 }
 
-.btm-health-box {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    height: 100%;
-}
-
-.btm-health-score-value {
-    font-size: 28px;
-    font-weight: 800;
-    color: var(--interactive-accent);
-    line-height: 1.2;
-}
-
-.btm-health-score-label {
-    font-size: 10px;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-top: 4px;
-}
-
-.btm-health-status-bar {
-    width: 80%;
-    height: 4px;
-    background: var(--background-modifier-border);
-    border-radius: 2px;
-    overflow: hidden;
-    margin-top: 8px;
-}
-
-.btm-health-status-fill {
-    height: 100%;
-    transition: width 1s ease-in-out;
-}
-
-.btm-health-status-perfect { background: var(--color-green); }
-.btm-health-status-good { background: var(--color-yellow); }
-.btm-health-status-danger { background: var(--color-red); }
-
 .btm-aligned-row {
     display: grid;
     grid-template-columns: 1fr 1fr auto;
     gap: 16px;
     align-items: start; /* Align to top so buttons below inputs don't stretch */
-}
-
-.btm-audit-container {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    margin-top: 12px;
-}
-
-.btm-audit-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-}
-
-.btm-audit-box {
-    background: var(--background-primary-alt);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--radius-s);
-    max-height: 250px;
-    overflow-y: auto;
-    padding: 8px;
-}
-
-.btm-audit-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start; /* Align to top for multi-line text */
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--background-modifier-border-soft);
-    font-size: 11px;
-    gap: 12px;
-    transition: background 0.1s ease;
-}
-
-.btm-audit-item.btm-clickable-row {
-    cursor: pointer;
-}
-
-.btm-audit-item:last-child {
-    border-bottom: none;
-}
-
-.btm-audit-item:hover {
-    background: var(--background-modifier-hover);
-}
-
-.btm-audit-issue-info {
-    flex: 1;
-    min-width: 0; /* Important for flex wrapping */
-    line-height: 1.4;
-}
-
-.btm-audit-issue-text {
-    word-break: break-word;
-    font-weight: 500;
-}
-
-.btm-audit-count-badge {
-    color: var(--text-muted);
-    font-size: 10px;
-    white-space: nowrap;
-}
-
-.btm-audit-actions {
-    flex-shrink: 0; /* Never squeeze buttons */
-    display: flex;
-    align-items: center;
-}
-
-.btm-audit-actions {
-    display: flex;
-    gap: 6px;
-}
-
-.btm-audit-issue {
-    color: var(--color-red);
-    font-size: 10px;
-    margin-left: 4px;
-}
-
-.btm-audit-header-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
-}
-
-.btm-audit-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-normal);
-}
-
-.btm-audit-empty-msg {
-    color: var(--text-muted);
-    font-style: italic;
-    padding: 12px;
-    text-align: center;
 }
 
 .btm-field-column {
