@@ -64,7 +64,10 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     this.addCommand({
       id: "convert-all-tags",
       name: "Convert all tags (with preview)",
-      callback: () => this.runConversionWithPreview()
+      callback: async () => {
+        await this.loadSettings();
+        this.runConversionWithPreview();
+      }
     });
     this.addCommand({
       id: "generate-tag-list",
@@ -95,12 +98,25 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
       })
     );
   }
+  onunload() {
+    if (this.aliasDebounceTimer) {
+      clearTimeout(this.aliasDebounceTimer);
+    }
+  }
   applyAliasesDebounced(file) {
     if (this.aliasDebounceTimer) clearTimeout(this.aliasDebounceTimer);
     this.aliasDebounceTimer = setTimeout(() => this.applyAliases(file), 1e3);
   }
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const saved = await this.loadData() || {};
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      scopeFilter: {
+        ...DEFAULT_SETTINGS.scopeFilter,
+        ...saved.scopeFilter || {}
+      }
+    };
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -135,6 +151,11 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     this.settings.operationHistory.unshift(fullRecord);
     if (this.settings.operationHistory.length > this.settings.maxHistorySize) {
       this.settings.operationHistory = this.settings.operationHistory.slice(0, this.settings.maxHistorySize);
+    }
+    let totalSize = JSON.stringify(this.settings.operationHistory).length;
+    while (totalSize > 5e6 && this.settings.operationHistory.length > 0) {
+      this.settings.operationHistory.pop();
+      totalSize = JSON.stringify(this.settings.operationHistory).length;
     }
     await this.saveSettings();
   }
@@ -171,6 +192,33 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
       if (content !== newContent) {
         const changes = this.diffContent(content, newContent);
         affectedFiles.push({ path: file.path, changes, included: true });
+      } else {
+        const cache = this.app.metadataCache.getFileCache(file);
+        if (cache == null ? void 0 : cache.frontmatter) {
+          let fmModified = false;
+          const checkTag = (t) => {
+            const clean = t.startsWith("#") ? t.substring(1) : t;
+            const converted = this.convertTagContent(clean);
+            const final = t.startsWith("#") ? "#" + converted : converted;
+            if (final !== t) fmModified = true;
+          };
+          const fm = cache.frontmatter;
+          if (fm.tags) {
+            if (Array.isArray(fm.tags)) fm.tags.forEach((t) => typeof t === "string" && checkTag(t));
+            else if (typeof fm.tags === "string") checkTag(fm.tags);
+          }
+          if (fm.tag) {
+            if (Array.isArray(fm.tag)) fm.tag.forEach((t) => typeof t === "string" && checkTag(t));
+            else if (typeof fm.tag === "string") checkTag(fm.tag);
+          }
+          if (fmModified) {
+            affectedFiles.push({
+              path: file.path,
+              changes: [{ line: 1, before: "(Frontmatter tags)", after: "(Will be standardized)" }],
+              included: true
+            });
+          }
+        }
       }
     }
     return {
@@ -188,22 +236,6 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
       }
     }
     return changes;
-  }
-  transformContent(content) {
-    const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
-    const codeBlocks = [];
-    let match;
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      codeBlocks.push({ start: match.index, end: match.index + match[0].length });
-    }
-    return content.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
-      if (codeBlocks.some((b) => offset >= b.start && offset < b.end)) {
-        return fullMatch;
-      }
-      const clean = tag.substring(1);
-      const converted = this.convertTagContent(clean);
-      return prefix + "#" + converted;
-    });
   }
   async runConversionWithPreview() {
     const preview = await this.previewConversion();
@@ -235,6 +267,8 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
         progressModal.update(processedCount);
       } catch (e) {
         console.error(`Failed to process ${file.path}:`, e);
+        processedCount++;
+        progressModal.update(processedCount);
       }
     }
     progressModal.close();
@@ -266,6 +300,8 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
         progressModal.update(processedCount);
       } catch (e) {
         console.error(`Failed to process ${file.path}:`, e);
+        processedCount++;
+        progressModal.update(processedCount);
       }
     }
     progressModal.close();
@@ -504,6 +540,87 @@ ${sortedTags.join("\n")}
     }
     new import_obsidian.Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
   }
+  async deleteTags(tagsToDelete) {
+    const cleanTags = tagsToDelete.map((t) => t.startsWith("#") ? t.substring(1) : t).filter((t) => t.length > 0);
+    if (cleanTags.length === 0) {
+      new import_obsidian.Notice("No valid tags to delete.");
+      return;
+    }
+    const files = this.getFilteredFiles();
+    const changes = [];
+    new import_obsidian.Notice(`Deleting ${cleanTags.length} tags...`);
+    const progressModal = new ProgressModal(this.app, files.length);
+    progressModal.open();
+    let processedCount = 0;
+    const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const patternParts = cleanTags.map((t) => `(?:${escapeRegExp(t)}(?:\\/[\\p{L}\\p{N}_\\-]+)*)`);
+    const combinedPattern = patternParts.join("|");
+    const tagRegex = new RegExp(`(^|\\s)(#)(${combinedPattern})(?=[\\s]|$|[^\\p{L}\\p{N}_-])`, "gu");
+    for (const file of files) {
+      try {
+        const before = await this.app.vault.read(file);
+        let modified = false;
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
+          const shouldDelete = (t) => {
+            const raw = t.startsWith("#") ? t.substring(1) : t;
+            return cleanTags.some((del) => raw === del || raw.startsWith(del + "/"));
+          };
+          if (fm.tags) {
+            if (Array.isArray(fm.tags)) {
+              const originalLen = fm.tags.length;
+              fm.tags = fm.tags.filter((t) => !shouldDelete(t));
+              if (fm.tags.length !== originalLen) modified = true;
+            } else if (typeof fm.tags === "string") {
+              if (shouldDelete(fm.tags)) {
+                delete fm.tags;
+                modified = true;
+              }
+            }
+          }
+          if (fm.tag) {
+            if (Array.isArray(fm.tag)) {
+              const originalLen = fm.tag.length;
+              fm.tag = fm.tag.filter((t) => !shouldDelete(t));
+              if (fm.tag.length !== originalLen) modified = true;
+            } else if (typeof fm.tag === "string") {
+              if (shouldDelete(fm.tag)) {
+                delete fm.tag;
+                modified = true;
+              }
+            }
+          }
+        });
+        await this.app.vault.process(file, (data) => {
+          const newData = data.replace(tagRegex, (match, prefix) => {
+            modified = true;
+            return prefix;
+          });
+          return newData;
+        });
+        if (modified) {
+          const after = await this.app.vault.read(file);
+          changes.push({ path: file.path, before, after });
+        }
+        processedCount++;
+        progressModal.update(processedCount);
+      } catch (e) {
+        console.error(`Failed to delete tags in ${file.path}`, e);
+        processedCount++;
+        progressModal.update(processedCount);
+      }
+    }
+    progressModal.close();
+    if (changes.length > 0) {
+      await this.addToHistory({
+        type: "delete",
+        description: `Deleted tags: ${cleanTags.join(", ")}`,
+        changes
+      });
+      new import_obsidian.Notice(`Deleted tags from ${changes.length} files.`);
+    } else {
+      new import_obsidian.Notice("No tags deleted.");
+    }
+  }
   async batchRename(pattern, replacement) {
     const files = this.getFilteredFiles();
     const changes = [];
@@ -517,21 +634,26 @@ ${sortedTags.join("\n")}
     const progressModal = new ProgressModal(this.app, files.length);
     progressModal.open();
     let processedCount = 0;
+    const safeReplacement = replacement.replace(/\$/g, "$$$$");
     for (const file of files) {
-      const before = await this.app.vault.read(file);
-      await this.app.vault.process(file, (data) => {
-        return data.replace(TAG_REGEX, (fullMatch, prefix, tag) => {
-          const clean = tag.substring(1);
-          const newTag = clean.replace(regex, replacement);
-          if (newTag !== clean) {
-            return prefix + "#" + newTag;
-          }
-          return fullMatch;
+      try {
+        const before = await this.app.vault.read(file);
+        await this.app.vault.process(file, (data) => {
+          return data.replace(TAG_REGEX, (fullMatch, prefix, tag) => {
+            const clean = tag.substring(1);
+            const newTag = clean.replace(regex, safeReplacement);
+            if (newTag !== clean) {
+              return prefix + "#" + newTag;
+            }
+            return fullMatch;
+          });
         });
-      });
-      const after = await this.app.vault.read(file);
-      if (before !== after) {
-        changes.push({ path: file.path, before, after });
+        const after = await this.app.vault.read(file);
+        if (before !== after) {
+          changes.push({ path: file.path, before, after });
+        }
+      } catch (e) {
+        console.error(`batchRename failed on ${file.path}`, e);
       }
       processedCount++;
       progressModal.update(processedCount);
@@ -574,7 +696,7 @@ ${sortedTags.join("\n")}
     const tags = this.app.metadataCache.getTags() || {};
     return Object.entries(tags).filter(([, count]) => count < this.settings.orphanThreshold).map(([tag, count]) => ({ tag, count })).sort((a, b) => a.count - b.count);
   }
-  analyzeTagStandardization(files) {
+  async analyzeTagStandardization(files) {
     const tags = Object.keys(this.app.metadataCache.getTags() || {});
     const totalTags = tags.length;
     const stats = {
@@ -585,9 +707,47 @@ ${sortedTags.join("\n")}
       nestingStats: { nested: [], flat: [], maxDepth: 0 },
       lengthStats: { short: [], medium: [], long: [], avgLength: 0 },
       locationStats: { frontmatter: [], body: [] },
+      formatStats: { yamlList: [], inlineArray: [], mixed: [] },
       inlineFiles: [],
       nestedFiles: []
     };
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!(cache == null ? void 0 : cache.frontmatter)) continue;
+      const hasTags = cache.frontmatter.tags !== void 0 || cache.frontmatter.tag !== void 0;
+      if (!hasTags) continue;
+      try {
+        const content = await this.app.vault.read(file);
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (fmMatch) {
+          const fmText = fmMatch[1];
+          const lines = fmText.split("\n");
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const match = line.match(/^(tags?):(.*)$/i);
+            if (match) {
+              const value = match[2].trim();
+              if (value.startsWith("[")) {
+                stats.formatStats.inlineArray.push(file);
+              } else if (!value || value === "") {
+                for (let j = i + 1; j < lines.length; j++) {
+                  const nextLine = lines[j].trim();
+                  if (!nextLine) continue;
+                  if (nextLine.startsWith("-")) {
+                    stats.formatStats.yamlList.push(file);
+                  }
+                  break;
+                }
+              } else {
+                stats.formatStats.mixed.push(file);
+              }
+              break;
+            }
+          }
+        }
+      } catch (e) {
+      }
+    }
     if (totalTags === 0) return stats;
     let totalLength = 0;
     for (const tag of tags) {
@@ -669,54 +829,128 @@ ${sortedTags.join("\n")}
     }
     stats.locationStats.frontmatter = Array.from(fmTags).sort();
     stats.locationStats.body = Array.from(bodyTags).sort();
-    stats.lengthStats.avgLength = Math.round(totalLength / totalTags);
+    stats.lengthStats.avgLength = totalTags > 0 ? Math.round(totalLength / totalTags) : 0;
     const calcConsistency = (arrays) => {
+      if (totalTags === 0) return 100;
       const dominant = Math.max(...arrays.map((a) => a.length));
       return Math.round(dominant / totalTags * 100);
     };
     stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
     const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
     const dominantSep = Math.max(...sepArrays.map((a) => a.length));
-    stats.separatorStats.consistency = Math.round((dominantSep + (stats.separatorStats.both.length === 0 ? 0 : 0)) / totalTags * 100);
-    stats.specialCharStats.consistency = Math.round(stats.specialCharStats.clean.length / totalTags * 100);
+    stats.separatorStats.consistency = totalTags > 0 ? Math.round((dominantSep + (stats.separatorStats.both.length === 0 ? 0 : 0)) / totalTags * 100) : 100;
+    stats.specialCharStats.consistency = totalTags > 0 ? Math.round(stats.specialCharStats.clean.length / totalTags * 100) : 100;
     return stats;
   }
   async findInvalidTagFormats() {
     const invalidFiles = [];
     const files = this.getFilteredFiles();
+    const INVALID_CHARS = /[!@£$%^&*()=+[\]{}:;'",.<>?|\\\\]/;
+    const PURE_NUMERIC = /^\d+$/;
     for (const file of files) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      if (!(cache == null ? void 0 : cache.frontmatter)) continue;
       const issues = [];
-      const fm = cache.frontmatter;
-      const checkKey = (key, value) => {
-        if (value === void 0 || value === null) return;
-        if (typeof value === "string") {
-          if (value.includes(",")) {
-            issues.push(`"${key}" uses comma-separated format instead of YAML array`);
-          } else if (value.trim().length > 0 && value.trim().includes(" ")) {
-            issues.push(`"${key}" contains spaces - may be invalid`);
-          }
-        } else if (Array.isArray(value)) {
-          value.forEach((t) => {
-            if (typeof t === "string" && t.trim().includes(" ")) {
-              issues.push(`Tag "${t}" contains spaces`);
-            }
-          });
-        }
+      const cache = this.app.metadataCache.getFileCache(file);
+      const validateTagString = (t, context) => {
+        if (typeof t !== "string") return null;
+        const trimmed = t.trim();
+        if (trimmed.length === 0) return null;
+        if (trimmed.includes(" ")) return { description: `${context} "${t}" contains spaces`, tag: t };
+        if (PURE_NUMERIC.test(trimmed)) return { description: `${context} "${t}" consists solely of numbers`, tag: t };
+        if (INVALID_CHARS.test(trimmed)) return { description: `${context} "${t}" contains prohibited special characters`, tag: t };
+        return null;
       };
-      if ("tags" in fm) checkKey("tags", fm.tags);
-      if ("tag" in fm) checkKey("tag", fm.tag);
+      const fm = cache == null ? void 0 : cache.frontmatter;
+      if (fm) {
+        const checkFMKey = (key, value) => {
+          if (value === void 0 || value === null) return;
+          if (typeof value === "string") {
+            if (value.startsWith("#")) {
+              issues.push({ description: `Front matter "${key}" starts with # (invalid YAML syntax)`, tag: value });
+            }
+            const err = validateTagString(value, `Front matter ${key}`);
+            if (err) issues.push(err);
+          } else if (Array.isArray(value)) {
+            value.forEach((t) => {
+              if (typeof t === "string" && t.startsWith("#")) {
+                issues.push({ description: `Front matter list item "${t}" starts with #`, tag: String(t) });
+              }
+              const err = validateTagString(String(t), `Front matter list item`);
+              if (err) issues.push(err);
+            });
+          }
+        };
+        if ("tags" in fm) checkFMKey("tags", fm.tags);
+        if ("tag" in fm) checkFMKey("tag", fm.tag);
+      }
       if (issues.length > 0) {
+        const uniqueIssues = Array.from(new Map(issues.map((i) => [i.description, i])).values());
         invalidFiles.push({
           path: file.path,
           file,
-          issues
+          issues: uniqueIssues
         });
       }
     }
     return invalidFiles;
   }
+  async convertTagFormat(files, format) {
+    const progressModal = new ProgressModal(this.app, files.length);
+    progressModal.open();
+    let count = 0;
+    for (const file of files) {
+      try {
+        await this.app.vault.process(file, (content) => {
+          var _a;
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+          if (!fmMatch) return content;
+          const fmContent = fmMatch[1];
+          const lines = fmContent.split("\n");
+          let keyIndex = -1;
+          let keyName = "";
+          for (let i = 0; i < lines.length; i++) {
+            const m = lines[i].match(/^(tags?):/);
+            if (m) {
+              keyIndex = i;
+              keyName = m[1];
+              break;
+            }
+          }
+          if (keyIndex === -1) return content;
+          let endIndex = keyIndex;
+          for (let i = keyIndex + 1; i < lines.length; i++) {
+            if (lines[i].match(/^\S/)) break;
+            endIndex = i;
+          }
+          const cache = this.app.metadataCache.getFileCache(file);
+          let tags = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[keyName];
+          if (!tags) return content;
+          if (typeof tags === "string") tags = tags.split(",").map((t) => t.trim());
+          if (!Array.isArray(tags)) tags = [tags];
+          tags = tags.filter((t) => t && typeof t === "string" && t.trim().length > 0);
+          if (tags.length === 0) return content;
+          const newLines = [];
+          if (format === "inline") {
+            newLines.push(`${keyName}: [${tags.join(", ")}]`);
+          } else {
+            newLines.push(`${keyName}:`);
+            tags.forEach((t) => newLines.push(`  - ${t}`));
+          }
+          lines.splice(keyIndex, endIndex - keyIndex + 1, ...newLines);
+          const fmStart = content.indexOf("---\n");
+          const fmEnd = content.indexOf("\n---", fmStart + 4) + 4;
+          if (fmStart === -1 || fmEnd === -1) return content;
+          return content.substring(0, fmStart + 4) + lines.join("\n") + content.substring(fmEnd - 4);
+        });
+        count++;
+        progressModal.update(count);
+      } catch (e) {
+        console.error("Format conversion failed", e);
+      }
+    }
+    progressModal.close();
+    new import_obsidian.Notice(`Converted tags to ${format === "inline" ? "Inline Array" : "YAML List"} in ${files.length} files.`);
+  }
+  // Automated Standardization removed per user request: "THE PLUGIN SHOULD NOT FIX INVALID TAGS"
   async findEmptyTags() {
     const emptyFiles = [];
     const files = this.getFilteredFiles();
@@ -732,63 +966,6 @@ ${sortedTags.join("\n")}
       }
     }
     return emptyFiles;
-  }
-  async fixAndStandardizeTags(file) {
-    var _a;
-    let modified = false;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
-      if (fm.tags) {
-        if (typeof fm.tags === "string") {
-          fm.tags = fm.tags.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
-          modified = true;
-        }
-      }
-    });
-    if (this.settings.tagFormat === "inline") {
-      const content = await this.app.vault.read(file);
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const originalFm = fmMatch[1];
-        const listPattern = /^(tags?):\s*(?:\n\s*-.*)+/m;
-        if (listPattern.test(originalFm)) {
-          const cache = this.app.metadataCache.getFileCache(file);
-          const tags = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.tags;
-          if (Array.isArray(tags)) {
-            const inlineString = `tags: [${tags.join(", ")}]`;
-            const newFm = originalFm.replace(listPattern, inlineString);
-            const newContent = content.replace(originalFm, newFm);
-            if (newContent !== content) {
-              await this.app.vault.modify(file, newContent);
-              modified = true;
-            }
-          }
-        }
-      }
-    }
-    return modified;
-  }
-  async standardizeAllTags() {
-    const files = this.getFilteredFiles();
-    if (files.length === 0) {
-      new import_obsidian.Notice("No files to standardize.");
-      return;
-    }
-    const progressModal = new ProgressModal(this.app, files.length);
-    progressModal.open();
-    let count = 0;
-    let modifiedCount = 0;
-    for (const file of files) {
-      try {
-        await this.fixAndStandardizeTags(file);
-        modifiedCount++;
-        count++;
-        progressModal.update(count);
-      } catch (e) {
-        console.error(`Failed to standardize ${file.path}`, e);
-      }
-    }
-    progressModal.close();
-    new import_obsidian.Notice(`Standardization check complete on ${count} files.`);
   }
   // --- Aliases ---
   async applyAliases(file) {
@@ -813,23 +990,25 @@ ${sortedTags.join("\n")}
       }
     });
     if (modified) {
-      for (const [alias, canonical] of Object.entries(aliases)) {
-        const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, "gu");
-        await this.app.vault.process(
-          file,
-          (data) => data.replace(regex, (m, prefix, hash) => prefix + hash + canonical)
-        );
-      }
+      await this.app.vault.process(file, (data) => {
+        let result = data;
+        for (const [alias, canonical] of Object.entries(aliases)) {
+          const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, "gu");
+          result = result.replace(regex, (m, prefix, hash) => prefix + hash + canonical);
+        }
+        return result;
+      });
     }
   }
   // --- Core Processing ---
-  async processFile(file) {
+  // Issue 1: Accept overrides instead of mutating settings
+  async processFile(file, overrides) {
     await this.app.fileManager.processFrontMatter(file, (fm) => {
       const processSingleTag = (t) => {
         const hasHash = t.startsWith("#");
         const clean = hasHash ? t.substring(1) : t;
-        const converted = this.convertTagContent(clean);
+        const converted = this.convertTagContent(clean, overrides);
         return hasHash ? "#" + converted : converted;
       };
       if (fm.tags) {
@@ -839,17 +1018,17 @@ ${sortedTags.join("\n")}
         fm.tag = Array.isArray(fm.tag) ? fm.tag.map(processSingleTag) : processSingleTag(fm.tag);
       }
     });
-    await this.app.vault.process(file, (data) => this.transformContent(data));
+    await this.app.vault.process(file, (data) => this.transformContent(data, overrides));
   }
-  convertTagContent(tagContent) {
+  convertTagContent(tagContent, overrides) {
     const parts = tagContent.split("/");
     const processedParts = parts.map((part, index) => {
       if (index > 0 && !this.settings.applyToNestedTags) return part;
-      return this.transformSegment(part);
+      return this.transformSegment(part, overrides);
     });
     return processedParts.join("/");
   }
-  transformSegment(segment) {
+  transformSegment(segment, overrides) {
     let s = segment;
     if (this.settings.removeSpecialChars) {
       s = s.replace(/[^\p{L}\p{N}\-_]/gu, "");
@@ -859,12 +1038,62 @@ ${sortedTags.join("\n")}
     } else if (this.settings.separatorStrategy === "kebab") {
       s = s.replace(/_/g, "-");
     }
-    if (this.settings.caseStrategy === "lowercase") {
+    const caseStrategy = (overrides == null ? void 0 : overrides.caseStrategy) || this.settings.caseStrategy;
+    if (caseStrategy === "lowercase") {
       s = s.toLowerCase();
-    } else if (this.settings.caseStrategy === "uppercase") {
+    } else if (caseStrategy === "uppercase") {
       s = s.toUpperCase();
     }
     return s;
+  }
+  transformContent(content, overrides) {
+    const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
+    const codeBlocks = [];
+    let match;
+    const fmMatch = content.match(/^---\n[\s\S]*?\n---/);
+    const skipStart = fmMatch ? fmMatch[0].length : 0;
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      codeBlocks.push({ start: match.index, end: match.index + match[0].length });
+    }
+    return content.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
+      if (offset < skipStart) return fullMatch;
+      if (codeBlocks.some((b) => offset >= b.start && offset < b.end)) {
+        return fullMatch;
+      }
+      const clean = tag.substring(1);
+      const converted = this.convertTagContent(clean, overrides);
+      return prefix + "#" + converted;
+    });
+  }
+  async convertAllToCase(targetCase) {
+    const files = this.getFilteredFiles();
+    const changes = [];
+    let processedCount = 0;
+    const progressModal = new ProgressModal(this.app, files.length);
+    progressModal.open();
+    for (const file of files) {
+      try {
+        const before = await this.app.vault.read(file);
+        await this.processFile(file, { caseStrategy: targetCase });
+        const after = await this.app.vault.read(file);
+        if (before !== after) {
+          changes.push({ path: file.path, before, after });
+        }
+        processedCount++;
+        progressModal.update(processedCount);
+      } catch (e) {
+        console.error(`Failed to convert case in ${file.path}`, e);
+      }
+    }
+    progressModal.close();
+    if (changes.length > 0) {
+      await this.addToHistory({
+        type: "convert",
+        description: `Bulk convert to ${targetCase} (${changes.length} files)`,
+        changes
+      });
+    }
+    new import_obsidian.Notice(`Converted tags to ${targetCase} in ${changes.length} files.`);
   }
   getAllTags() {
     const tags = this.app.metadataCache.getTags() || {};
@@ -988,30 +1217,131 @@ var HistoryModal = class extends import_obsidian.Modal {
     this.contentEl.empty();
   }
 };
+var BtmConfirmationModal = class extends import_obsidian.Modal {
+  constructor(app, title, message, onConfirm) {
+    super(app);
+    this.title = title;
+    this.message = message;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.modalEl.addClass("btm-confirmation-modal-window");
+    contentEl.addClass("btm-confirmation-modal");
+    contentEl.createEl("h2", { text: this.title, cls: "btm-conf-title" });
+    contentEl.createEl("p", { text: this.message, cls: "btm-conf-message" });
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row-centered" });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel", cls: "btm-conf-btn" });
+    cancelBtn.onclick = () => this.close();
+    const confirmBtn = btnRow.createEl("button", { text: "Confirm", cls: "mod-cta btm-conf-btn" });
+    confirmBtn.onclick = () => {
+      this.close();
+      this.onConfirm();
+    };
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
 var TagHierarchyModal = class extends import_obsidian.Modal {
   constructor(app, plugin) {
     super(app);
+    this.searchQuery = "";
+    this.sortStrategy = "alphabetical";
     this.plugin = plugin;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("btm-hierarchy-modal");
-    new import_obsidian.Setting(contentEl).setName("Tag Hierarchy").setHeading();
-    const hierarchy = this.plugin.getTagHierarchy();
-    if (hierarchy.length === 0) {
-      contentEl.createEl("p", { text: "No tags found." });
+    new import_obsidian.Setting(contentEl).setName("Nested Tags").setHeading();
+    this.hierarchy = this.plugin.getTagHierarchy().filter((n) => n.children.length > 0);
+    if (this.hierarchy.length === 0) {
+      contentEl.createEl("p", { text: "No nested tags found in vault." });
       return;
     }
-    const treeEl = contentEl.createDiv({ cls: "btm-tree" });
-    this.renderTree(treeEl, hierarchy, 0);
+    const searchRow = contentEl.createDiv({ cls: "btm-tree-search-row" });
+    const searchInput = new import_obsidian.TextComponent(searchRow).setPlaceholder("Search tags...").onChange((value) => {
+      this.searchQuery = value;
+      this.updateDisplay();
+    });
+    searchInput.inputEl.addClass("btm-tree-search-input");
+    const controlRow = contentEl.createDiv({ cls: "btm-tree-controls-row" });
+    const sortLabel = controlRow.createSpan({ text: "Sort by:", cls: "btm-control-label" });
+    const dropdown = new import_obsidian.DropdownComponent(controlRow).addOption("alphabetical", "A-Z").addOption("nesting", "Nested Count").addOption("usage", "Usage").setValue(this.sortStrategy).onChange((value) => {
+      this.sortStrategy = value;
+      this.updateDisplay();
+    });
+    dropdown.selectEl.addClass("btm-tree-sort-dropdown");
+    const spacer = controlRow.createDiv({ cls: "btm-spacer" });
+    const expandBtn = controlRow.createEl("button", { text: "Expand All", cls: "btm-tiny-btn" });
+    const collapseBtn = controlRow.createEl("button", { text: "Collapse All", cls: "btm-tiny-btn" });
+    this.treeEl = contentEl.createDiv({ cls: "btm-tree-container" });
+    this.updateDisplay();
+    expandBtn.onclick = () => {
+      this.treeEl.querySelectorAll(".btm-tree-children").forEach((el) => el.removeClass("is-collapsed"));
+      this.treeEl.querySelectorAll(".btm-tree-collapse-icon").forEach((el) => {
+        (0, import_obsidian.setIcon)(el, "chevron-down");
+      });
+    };
+    collapseBtn.onclick = () => {
+      this.treeEl.querySelectorAll(".btm-tree-children").forEach((el) => el.addClass("is-collapsed"));
+      this.treeEl.querySelectorAll(".btm-tree-collapse-icon").forEach((el) => {
+        (0, import_obsidian.setIcon)(el, "chevron-right");
+      });
+    };
+  }
+  deepCloneNodes(nodes) {
+    return nodes.map((node) => ({
+      ...node,
+      children: this.deepCloneNodes(node.children)
+    }));
+  }
+  updateDisplay() {
+    this.treeEl.empty();
+    const clonedHierarchy = this.deepCloneNodes(this.hierarchy);
+    let filtered = this.filterNodes(clonedHierarchy, this.searchQuery);
+    this.sortNodes(filtered);
+    this.renderTree(this.treeEl, filtered, 0);
+  }
+  filterNodes(nodes, query) {
+    if (!query) return nodes.map((n) => ({ ...n }));
+    const q = query.toLowerCase();
+    return nodes.map((node) => {
+      const matchesSelf = node.name.toLowerCase().includes(q);
+      const filteredChildren = matchesSelf ? node.children : this.filterNodes(node.children, query);
+      if (matchesSelf || filteredChildren.length > 0) {
+        return { ...node, children: filteredChildren };
+      }
+      return null;
+    }).filter((n) => n !== null);
+  }
+  sortNodes(nodes) {
+    nodes.sort((a, b) => {
+      if (this.sortStrategy === "nesting") {
+        return b.children.length - a.children.length || a.name.localeCompare(b.name);
+      } else if (this.sortStrategy === "usage") {
+        return b.count - a.count || a.name.localeCompare(b.name);
+      } else {
+        return a.name.localeCompare(b.name);
+      }
+    });
+    for (const node of nodes) {
+      if (node.children.length > 0) {
+        this.sortNodes(node.children);
+      }
+    }
   }
   renderTree(container, nodes, depth) {
-    for (const node of nodes.sort((a, b) => a.name.localeCompare(b.name))) {
-      const nodeEl = container.createDiv({ cls: "btm-tree-node" });
-      nodeEl.style.paddingLeft = `${depth * 20}px`;
+    for (const node of nodes) {
       const hasChildren = node.children.length > 0;
+      const nodeEl = container.createDiv({ cls: "btm-tree-node" });
       const headerEl = nodeEl.createDiv({ cls: "btm-tree-header" });
+      const collapseIcon = headerEl.createSpan({ cls: "btm-tree-collapse-icon" });
+      if (hasChildren) {
+        (0, import_obsidian.setIcon)(collapseIcon, "chevron-down");
+      }
       const iconEl = headerEl.createSpan({ cls: "btm-tree-icon" });
       (0, import_obsidian.setIcon)(iconEl, hasChildren ? "folder" : "tag");
       headerEl.createSpan({ text: node.name, cls: "btm-tree-name" });
@@ -1019,8 +1349,29 @@ var TagHierarchyModal = class extends import_obsidian.Modal {
         headerEl.createSpan({ text: ` (${node.count})`, cls: "btm-tree-count" });
       }
       if (hasChildren) {
-        const childContainer = container.createDiv({ cls: "btm-tree-children" });
+        const childContainer = nodeEl.createDiv({ cls: "btm-tree-children" });
         this.renderTree(childContainer, node.children, depth + 1);
+        collapseIcon.onclick = (e) => {
+          e.stopPropagation();
+          const isCollapsed = childContainer.hasClass("is-collapsed");
+          if (isCollapsed) {
+            childContainer.removeClass("is-collapsed");
+            (0, import_obsidian.setIcon)(collapseIcon, "chevron-down");
+          } else {
+            childContainer.addClass("is-collapsed");
+            (0, import_obsidian.setIcon)(collapseIcon, "chevron-right");
+          }
+        };
+        headerEl.onclick = () => {
+          const isCollapsed = childContainer.hasClass("is-collapsed");
+          if (isCollapsed) {
+            childContainer.removeClass("is-collapsed");
+            (0, import_obsidian.setIcon)(collapseIcon, "chevron-down");
+          } else {
+            childContainer.addClass("is-collapsed");
+            (0, import_obsidian.setIcon)(collapseIcon, "chevron-right");
+          }
+        };
       }
     }
   }
@@ -1054,39 +1405,30 @@ var InvalidTagsModal = class extends import_obsidian.Modal {
         this.close();
         this.app.workspace.openLinkText(item.path, "", false);
       };
-      const fixBtn = headerEl.createEl("button", { text: "Fix", cls: "btm-view-invalid-btn" });
-      fixBtn.onclick = async () => {
-        await this.plugin.fixAndStandardizeTags(item.file);
-        new import_obsidian.Notice(`Fixed tags in ${item.file.basename}`);
-        itemEl.remove();
-      };
       const issuesEl = itemEl.createDiv({ cls: "btm-invalid-issues" });
       for (const issue of item.issues) {
-        const issueEl = issuesEl.createDiv({ cls: "btm-invalid-issue" });
-        const issueIcon = issueEl.createSpan({ cls: "btm-icon" });
-        (0, import_obsidian.setIcon)(issueIcon, "alert-circle");
-        issueEl.createSpan({ text: " " + issue });
+        const issueEl = issuesEl.createDiv({ cls: "btm-invalid-issue-manual" });
+        const infoEl = issueEl.createDiv({ cls: "btm-issue-info" });
+        (0, import_obsidian.setIcon)(infoEl.createSpan({ cls: "btm-icon" }), "alert-circle");
+        infoEl.createSpan({ text: " " + issue.description });
+        if (issue.tag) {
+          const fixRow = issueEl.createDiv({ cls: "btm-fix-manual-row" });
+          const input = new import_obsidian.TextComponent(fixRow).setPlaceholder("Correct tag name...");
+          input.setValue(issue.tag.replace(/^#/, "").trim());
+          const applyBtn = fixRow.createEl("button", { text: "Apply Fix", cls: "btm-small-btn mod-cta" });
+          applyBtn.onclick = async () => {
+            const newTag = input.getValue().trim();
+            if (newTag) {
+              await this.plugin.renameTag(issue.tag, newTag);
+              issueEl.remove();
+              if (issuesEl.children.length === 0) itemEl.remove();
+              if (listEl.children.length === 0) this.close();
+            }
+          };
+        }
       }
     }
     const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
-    const fixAllBtn = btnRow.createEl("button", { text: "Fix All", cls: "mod-cta" });
-    fixAllBtn.onclick = async () => {
-      const progressModal = new ProgressModal(this.app, this.invalidFiles.length);
-      progressModal.open();
-      let count = 0;
-      for (const item of this.invalidFiles) {
-        try {
-          await this.plugin.fixAndStandardizeTags(item.file);
-          count++;
-          progressModal.update(count);
-        } catch (e) {
-          console.error("Failed to fix " + item.path, e);
-        }
-      }
-      progressModal.close();
-      new import_obsidian.Notice(`Fixed tags in ${count} files.`);
-      this.close();
-    };
     const closeBtn = btnRow.createEl("button", { text: "Close" });
     closeBtn.onclick = () => this.close();
   }
@@ -1225,7 +1567,7 @@ var TagListModal = class extends import_obsidian.Modal {
     for (const tag of this.tags) {
       const itemEl = listEl.createDiv({ cls: "btm-invalid-item btm-tag-item" });
       const tagText = tag.startsWith("#") ? tag : "#" + tag;
-      const tagEl = itemEl.createSpan({ text: tagText, cls: "btm-tag-pill" });
+      itemEl.createSpan({ text: tagText, cls: "btm-tag-pill" });
       const btn = itemEl.createEl("button", { text: "Search", cls: "btm-search-btn" });
       btn.onclick = () => {
         var _a;
@@ -1239,8 +1581,33 @@ var TagListModal = class extends import_obsidian.Modal {
       };
     }
     const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
-    const closeBtn = btnRow.createEl("button", { text: "Close" });
-    closeBtn.onclick = () => this.close();
+    btnRow.createEl("button", { text: "Close" }).onclick = () => this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var SimpleFileListModal = class extends import_obsidian.Modal {
+  constructor(app, title, files) {
+    super(app);
+    this.title = title;
+    this.files = files;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("btm-file-list-modal");
+    new import_obsidian.Setting(contentEl).setName(this.title).setDesc(`${this.files.length} files found`).setHeading();
+    const listEl = contentEl.createDiv({ cls: "btm-file-list" });
+    for (const file of this.files) {
+      const itemEl = listEl.createDiv({ cls: "btm-file-item" });
+      itemEl.createEl("a", { text: file.path, cls: "btm-file-link" }).onclick = () => {
+        this.close();
+        this.app.workspace.openLinkText(file.path, "", false);
+      };
+    }
+    const btnRow = contentEl.createDiv({ cls: "btm-button-row" });
+    btnRow.createEl("button", { text: "Close" }).onclick = () => this.close();
   }
   onClose() {
     this.contentEl.empty();
@@ -1406,13 +1773,23 @@ var FolderSelectModal = class extends import_obsidian.Modal {
   renderList() {
     this.listEl.empty();
     const query = this.searchInput.getValue().toLowerCase();
-    const folders = this.getAllFolders();
-    const filtered = query ? folders.filter((f) => f.toLowerCase().includes(query)) : folders;
-    if (filtered.length === 0) {
-      this.listEl.createEl("p", { text: "No folders found", cls: "btm-no-results" });
-      return;
+    const allFolders = this.getAllFolders();
+    let displayFolders = [];
+    if (!query) {
+      displayFolders = Array.from(this.selectedFolders).sort();
+      if (displayFolders.length === 0) {
+        this.listEl.createEl("p", { text: "Start typing to search folders...", cls: "btm-loading" });
+        return;
+      }
+      this.listEl.createEl("div", { text: "Selected Folders:", cls: "btm-list-header" });
+    } else {
+      displayFolders = allFolders.filter((f) => f.toLowerCase().includes(query)).slice(0, 100);
+      if (displayFolders.length === 0) {
+        this.listEl.createEl("p", { text: "No folders found", cls: "btm-no-results" });
+        return;
+      }
     }
-    for (const folder of filtered.slice(0, 100)) {
+    for (const folder of displayFolders) {
       const itemEl = this.listEl.createDiv({ cls: "btm-tag-item" });
       const checkbox = itemEl.createEl("input", { type: "checkbox" });
       checkbox.checked = this.selectedFolders.has(folder);
@@ -1445,7 +1822,6 @@ var FolderSelectModal = class extends import_obsidian.Modal {
   }
 };
 var TagManagerModal = class extends import_obsidian.Modal {
-  // For layout consistency
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -1461,7 +1837,10 @@ var TagManagerModal = class extends import_obsidian.Modal {
     const arrow = overviewHeader.createSpan({ cls: "btm-header-arrow" });
     (0, import_obsidian.setIcon)(arrow, "chevron-down");
     this.statsEl = overviewBox.createDiv({ cls: "btm-collapsible-content" });
-    this.updateStats();
+    this.invalidBlock = contentEl.createDiv({ cls: "btm-section-box btm-invalid-block" });
+    this.invalidBlock.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Invalid Tags (Real-time)" });
+    this.invalidContentEl = this.invalidBlock.createDiv({ cls: "btm-invalid-content" });
+    this.updateStats().catch((e) => console.error("Failed to update stats", e));
     let isExpanded = true;
     overviewHeader.onclick = () => {
       isExpanded = !isExpanded;
@@ -1482,7 +1861,7 @@ var TagManagerModal = class extends import_obsidian.Modal {
     const findSuggestBtn = findCol.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(findSuggestBtn, "search");
     findSuggestBtn.createSpan({ text: " Search" });
-    const tagCountDisplay = findCol.createDiv({ cls: "btm-tag-count-display", attr: { style: "font-size: 11px; margin-top: 4px; color: var(--text-muted);" } });
+    const tagCountDisplay = findCol.createDiv({ cls: "btm-tag-count-display", attr: { style: "margin-top: 4px; color: var(--text-muted); font-size: var(--font-ui-smaller);" } });
     findSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
       this.findInput.setValue(t);
       const tags = this.plugin.app.metadataCache.getTags() || {};
@@ -1492,7 +1871,8 @@ var TagManagerModal = class extends import_obsidian.Modal {
     const replaceCol = renameContainer.createDiv({ cls: "btm-field-column" });
     replaceCol.createEl("label", { text: "Replace" });
     this.replaceInput = new import_obsidian.TextComponent(replaceCol).setPlaceholder("#new-tag");
-    const btnRename = renameContainer.createEl("button", { text: "Rename", cls: "mod-cta btm-action-btn" });
+    const actionCol = renameContainer.createDiv({ cls: "btm-field-column" });
+    const btnRename = actionCol.createEl("button", { text: "Rename", cls: "mod-cta btm-action-btn" });
     btnRename.onclick = async () => {
       const oldT = this.findInput.getValue();
       const newT = this.replaceInput.getValue();
@@ -1522,15 +1902,63 @@ var TagManagerModal = class extends import_obsidian.Modal {
     (0, import_obsidian.setIcon)(targetSuggestBtn, "search");
     targetSuggestBtn.createSpan({ text: " Search" });
     targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => this.mergeTargetInput.setValue(t)).open();
-    const btnMerge = mergeContainer.createEl("button", { text: "Merge", cls: "mod-cta btm-action-btn" });
+    const mergeActionCol = mergeContainer.createDiv({ cls: "btm-field-column" });
+    const btnMerge = mergeActionCol.createEl("button", { text: "Merge", cls: "mod-cta btm-action-btn" });
     btnMerge.onclick = async () => {
       const sources = this.mergeSourcesInput.getValue().split(",").map((s) => s.trim()).filter((s) => s);
       const target = this.mergeTargetInput.getValue().trim();
       if (sources.length > 0 && target) {
-        this.close();
-        await this.plugin.mergeTags(sources, target);
+        new BtmConfirmationModal(
+          this.app,
+          "Merge Tags",
+          `Are you sure you want to merge ${sources.length} source tags into "${target}"? This will modify multiple files.`,
+          async () => {
+            this.close();
+            await this.plugin.mergeTags(sources, target);
+          }
+        ).open();
       } else {
         new import_obsidian.Notice("Please provide source tags and a target.");
+      }
+    };
+    const deleteBox = contentEl.createDiv({ cls: "btm-section-box" });
+    deleteBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Delete Tags" });
+    const deleteContainer = deleteBox.createDiv({ cls: "btm-aligned-row" });
+    const deleteCol = deleteContainer.createDiv({ cls: "btm-field-column" });
+    deleteCol.setAttr("style", "grid-column: span 2;");
+    deleteCol.createEl("label", { text: "Tags to Delete (comma separated)" });
+    this.deleteInput = new import_obsidian.TextComponent(deleteCol).setPlaceholder("#bad-tag, #unused");
+    this.deleteInput.inputEl.addClass("btm-full-width-input");
+    this.deleteInput.inputEl.style.width = "100%";
+    const delBtnRow = deleteCol.createDiv({ attr: { style: "display: flex; gap: 8px;" } });
+    const delSelectBtn = delBtnRow.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
+    (0, import_obsidian.setIcon)(delSelectBtn, "list-filter");
+    delSelectBtn.createSpan({ text: " Select" });
+    delSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+      this.deleteInput.setValue(tags.map((t) => "#" + t).join(", "));
+    }).open();
+    const delSearchBtn = delBtnRow.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
+    (0, import_obsidian.setIcon)(delSearchBtn, "search");
+    delSearchBtn.createSpan({ text: " Search" });
+    delSearchBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
+      const current = this.deleteInput.getValue();
+      this.deleteInput.setValue(current ? current + ", #" + t : "#" + t);
+    }).open();
+    const btnDelete = deleteContainer.createEl("button", { text: "Delete", cls: "mod-warning btm-action-btn" });
+    btnDelete.onclick = async () => {
+      const tags = this.deleteInput.getValue().split(",").map((s) => s.trim()).filter((s) => s);
+      if (tags.length > 0) {
+        new BtmConfirmationModal(
+          this.app,
+          "Delete Tags",
+          `Are you sure you want to delete ${tags.length} tags across your vault? This action cannot be undone easily.`,
+          async () => {
+            this.close();
+            await this.plugin.deleteTags(tags);
+          }
+        ).open();
+      } else {
+        new import_obsidian.Notice("Please provide tags to delete.");
       }
     };
     const patternBox = contentEl.createDiv({ cls: "btm-section-box" });
@@ -1547,8 +1975,15 @@ var TagManagerModal = class extends import_obsidian.Modal {
       const pattern = this.patternInput.getValue();
       const replacement = this.patternReplaceInput.getValue();
       if (pattern) {
-        this.close();
-        await this.plugin.batchRename(pattern, replacement);
+        new BtmConfirmationModal(
+          this.app,
+          "Batch Rename (Pattern)",
+          `Are you sure you want to perform a batch rename using the pattern "${pattern}"? This will modify many files.`,
+          async () => {
+            this.close();
+            await this.plugin.batchRename(pattern, replacement);
+          }
+        ).open();
       } else {
         new import_obsidian.Notice("Please provide a pattern.");
       }
@@ -1558,70 +1993,70 @@ var TagManagerModal = class extends import_obsidian.Modal {
     new import_obsidian.Setting(settingsBox).setName("Case Strategy").addDropdown((dropdown) => dropdown.addOption("lowercase", "Lowercase").addOption("uppercase", "Uppercase").addOption("none", "No Change").setValue(this.plugin.settings.caseStrategy).onChange(async (value) => {
       this.plugin.settings.caseStrategy = value;
       await this.plugin.saveSettings();
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }));
     new import_obsidian.Setting(settingsBox).setName("Separator Style").addDropdown((dropdown) => dropdown.addOption("preserve", "Preserve").addOption("snake", "Snake Case").addOption("kebab", "Kebab Case").setValue(this.plugin.settings.separatorStrategy).onChange(async (value) => {
       this.plugin.settings.separatorStrategy = value;
       await this.plugin.saveSettings();
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }));
-    new import_obsidian.Setting(settingsBox).setName("Remove Special Characters").addToggle((toggle) => toggle.setValue(this.plugin.settings.removeSpecialChars).onChange(async (value) => {
+    new import_obsidian.Setting(settingsBox).setName("Remove Special Characters").setDesc("Removes everything except letters, numbers, hyphens (-), and underscores (_).").addToggle((toggle) => toggle.setValue(this.plugin.settings.removeSpecialChars).onChange(async (value) => {
       this.plugin.settings.removeSpecialChars = value;
       await this.plugin.saveSettings();
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }));
     new import_obsidian.Setting(settingsBox).setName("Apply to Nested Tags").addToggle((toggle) => toggle.setValue(this.plugin.settings.applyToNestedTags).onChange(async (value) => {
       this.plugin.settings.applyToNestedTags = value;
       await this.plugin.saveSettings();
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }));
-    const scopeBox = contentEl.createDiv({ cls: "btm-section-box" });
-    scopeBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Scope Filter" });
-    new import_obsidian.Setting(scopeBox).setName("Enable Scope Filter").setDesc("Limit operations to specific folders").addToggle((toggle) => toggle.setValue(this.plugin.settings.scopeFilter.enabled).onChange(async (value) => {
+    new import_obsidian.Setting(settingsBox).setName("Scope Filter").setHeading();
+    new import_obsidian.Setting(settingsBox).setName("Enable Scope Filter").setDesc("Limit operations to specific folders").addToggle((toggle) => toggle.setValue(this.plugin.settings.scopeFilter.enabled).onChange(async (value) => {
       this.plugin.settings.scopeFilter.enabled = value;
       await this.plugin.saveSettings();
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }));
-    const includeRow = scopeBox.createDiv({ cls: "btm-scope-row", attr: { style: "margin-bottom: 8px;" } });
-    includeRow.createSpan({ text: "Include: " });
-    const includeDisplay = includeRow.createSpan({ text: this.plugin.settings.scopeFilter.includeFolders.join(", ") || "(all)", cls: "btm-folder-display", attr: { style: "margin-right: 8px;" } });
+    const scopeContainer = settingsBox.createDiv({ cls: "btm-scope-container" });
+    const includeCol = scopeContainer.createDiv({ cls: "btm-field-column" });
+    includeCol.createEl("label", { text: "Include Folders" });
+    const includeRow = includeCol.createDiv({ cls: "btm-scope-input-row" });
+    const includeDisplay = includeRow.createDiv({ text: this.plugin.settings.scopeFilter.includeFolders.join(", ") || "(all)", cls: "btm-folder-input-display" });
     const includeBtn = includeRow.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(includeBtn, "folder-plus");
-    includeBtn.createSpan({ text: " Select" });
     includeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.includeFolders, async (f) => {
       this.plugin.settings.scopeFilter.includeFolders = f;
       await this.plugin.saveSettings();
       includeDisplay.textContent = f.join(", ") || "(all)";
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }).open();
-    const excludeRow = scopeBox.createDiv({ cls: "btm-scope-row" });
-    excludeRow.createSpan({ text: "Exclude: " });
-    const excludeDisplay = excludeRow.createSpan({ text: this.plugin.settings.scopeFilter.excludeFolders.join(", ") || "(none)", cls: "btm-folder-display", attr: { style: "margin-right: 8px;" } });
+    const excludeCol = scopeContainer.createDiv({ cls: "btm-field-column" });
+    excludeCol.createEl("label", { text: "Exclude Folders" });
+    const excludeRow = excludeCol.createDiv({ cls: "btm-scope-input-row" });
+    const excludeDisplay = excludeRow.createDiv({ text: this.plugin.settings.scopeFilter.excludeFolders.join(", ") || "(none)", cls: "btm-folder-input-display" });
     const excludeBtn = excludeRow.createEl("button", { cls: "btm-suggest-btn btm-icon-btn btm-small-center-btn" });
     (0, import_obsidian.setIcon)(excludeBtn, "folder-minus");
-    excludeBtn.createSpan({ text: " Select" });
     excludeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.excludeFolders, async (f) => {
       this.plugin.settings.scopeFilter.excludeFolders = f;
       await this.plugin.saveSettings();
       excludeDisplay.textContent = f.join(", ") || "(none)";
-      this.updateStats();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }).open();
-    const actionBox = contentEl.createDiv({ cls: "btm-section-box" });
-    actionBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Actions" });
-    const actionRow = actionBox.createDiv({ cls: "btm-action-row" });
-    const btnConvert = this.createIconButton(actionRow, "refresh-cw", "Convert All", "mod-cta");
-    (0, import_obsidian.setTooltip)(btnConvert, "Run full conversion/standardization based on settings");
-    btnConvert.onclick = async () => {
+    const bulkActionRow = settingsBox.createDiv({ cls: "btm-action-row" });
+    const btnConvertBulk = this.createIconButton(bulkActionRow, "refresh-cw", "Convert All", "mod-cta");
+    btnConvertBulk.onclick = async () => {
       this.close();
       await this.plugin.runConversionWithPreview();
     };
+    const actionBox = contentEl.createDiv({ cls: "btm-section-box" });
+    actionBox.createDiv({ cls: "btm-collapsible-header" }).createSpan({ text: "Other actions" });
+    const actionRow = actionBox.createDiv({ cls: "btm-action-row" });
     const btnList = this.createIconButton(actionRow, "list", "Tag List");
     (0, import_obsidian.setTooltip)(btnList, "View all tags in a list");
     btnList.onclick = async () => {
       this.close();
       await this.plugin.generateTagList();
     };
-    const btnHierarchy = this.createIconButton(actionRow, "git-branch", "Hierarchy");
+    const btnHierarchy = this.createIconButton(actionRow, "git-branch", "Tag Nesting");
     (0, import_obsidian.setTooltip)(btnHierarchy, "View tag hierarchy tree");
     btnHierarchy.onclick = () => {
       this.close();
@@ -1639,12 +2074,6 @@ var TagManagerModal = class extends import_obsidian.Modal {
       this.close();
       new HistoryModal(this.app, this.plugin).open();
     };
-    const btnStandardize = this.createIconButton(actionRow, "check-square", "Fix Invalid");
-    (0, import_obsidian.setTooltip)(btnStandardize, "Standardize formats (commas/spaces)");
-    btnStandardize.onclick = async () => {
-      this.close();
-      await this.plugin.standardizeAllTags();
-    };
   }
   createIconButton(container, iconName, text, cls = "") {
     const btn = container.createEl("button", { cls: `btm-icon-btn ${cls}`.trim() });
@@ -1661,11 +2090,14 @@ var TagManagerModal = class extends import_obsidian.Modal {
     else if (value < 80) fill.addClass("btm-progress-medium");
     else fill.addClass("btm-progress-high");
   }
-  updateStats() {
+  async updateStats() {
+    const files = this.plugin.getFilteredFiles();
+    if (this.statsEl.childElementCount === 0) {
+      this.statsEl.createDiv({ text: "Loading stats...", cls: "btm-loading" });
+    }
+    const stats = await this.plugin.analyzeTagStandardization(files);
     this.statsEl.empty();
     this.statsEl.addClass("btm-standardization-panel");
-    const files = this.plugin.getFilteredFiles();
-    const stats = this.plugin.analyzeTagStandardization(files);
     const headerRow = this.statsEl.createDiv({ cls: "btm-stats-header" });
     const tagsItem = headerRow.createSpan({ cls: "btm-stat-item" });
     (0, import_obsidian.setIcon)(tagsItem.createSpan({ cls: "btm-stat-icon" }), "tags");
@@ -1691,6 +2123,31 @@ var TagManagerModal = class extends import_obsidian.Modal {
     createStatLink(caseDetails, stats.caseStats.lowercase.length, "lower", stats.caseStats.lowercase);
     createStatLink(caseDetails, stats.caseStats.uppercase.length, "UPPER", stats.caseStats.uppercase);
     createStatLink(caseDetails, stats.caseStats.mixed.length, "Mixed", stats.caseStats.mixed);
+    const caseInBtns = caseBox.createDiv({ cls: "btm-inline-case-btns" });
+    const btnUpper = caseInBtns.createEl("button", { text: "Convert to upper", cls: "btm-mini-case-btn" });
+    btnUpper.onclick = async () => {
+      new BtmConfirmationModal(
+        this.app,
+        "Bulk Convert to UPPERCASE",
+        "Are you sure you want to convert ALL tags in your vault to UPPERCASE? This action will modify multiple files.",
+        async () => {
+          await this.plugin.convertAllToCase("uppercase");
+          this.updateStats().catch((e) => console.error("Failed to update stats", e));
+        }
+      ).open();
+    };
+    const btnLower = caseInBtns.createEl("button", { text: "Convert to lower", cls: "btm-mini-case-btn" });
+    btnLower.onclick = async () => {
+      new BtmConfirmationModal(
+        this.app,
+        "Bulk Convert to lowercase",
+        "Are you sure you want to convert ALL tags in your vault to lowercase? This action will modify multiple files.",
+        async () => {
+          await this.plugin.convertAllToCase("lowercase");
+          this.updateStats().catch((e) => console.error("Failed to update stats", e));
+        }
+      ).open();
+    };
     const sepBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     sepBox.createDiv({ text: "Separators", cls: "btm-metric-label" });
     this.createProgressBar(sepBox, stats.separatorStats.consistency);
@@ -1705,40 +2162,112 @@ var TagManagerModal = class extends import_obsidian.Modal {
     const specialDetails = specialBox.createDiv({ cls: "btm-metric-details" });
     createStatLink(specialDetails, stats.specialCharStats.clean.length, "clean", stats.specialCharStats.clean);
     createStatLink(specialDetails, stats.specialCharStats.withSpecial.length, "with special chars", stats.specialCharStats.withSpecial);
+    const formatBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
+    formatBox.createDiv({ text: "Tag Format Style", cls: "btm-metric-label" });
+    const formatContent = formatBox.createDiv({ cls: "btm-metric-details", attr: { style: "display:block; margin-bottom: 5px;" } });
+    const createFormatLink = (label, files2) => {
+      if (files2.length > 0) {
+        const link = formatContent.createEl("a", { text: `${label}: ${files2.length} files`, cls: "btm-stat-link", attr: { style: "display:block;" } });
+        link.onclick = () => {
+          this.close();
+          new SimpleFileListModal(this.app, label, files2).open();
+        };
+      } else {
+        formatContent.createDiv({ text: `${label}: 0 files`, attr: { style: "color: var(--text-muted); font-size: var(--font-ui-smaller);" } });
+      }
+    };
+    createFormatLink("YAML List", stats.formatStats.yamlList);
+    createFormatLink("Inline Array", stats.formatStats.inlineArray);
+    const formatActions = formatBox.createDiv({ cls: "btm-format-actions", attr: { style: "margin-top: auto; display: flex; flex-direction: column; gap: 4px;" } });
+    const btnToInline = formatActions.createEl("button", { text: "Convert All to Inline", cls: "btm-small-btn" });
+    btnToInline.onclick = async () => {
+      new BtmConfirmationModal(
+        this.app,
+        "Convert to Inline Array",
+        "Are you sure you want to convert ALL tags in these files to the [tag1, tag2] inline format?",
+        async () => {
+          await this.plugin.convertTagFormat(files, "inline");
+          this.updateStats().catch((e) => console.error("Failed to update stats", e));
+        }
+      ).open();
+    };
+    const btnToList = formatActions.createEl("button", { text: "Convert All to List", cls: "btm-small-btn" });
+    btnToList.onclick = async () => {
+      new BtmConfirmationModal(
+        this.app,
+        "Convert to YAML List",
+        "Are you sure you want to convert ALL tags in these files to the YAML list format?",
+        async () => {
+          await this.plugin.convertTagFormat(files, "list");
+          this.updateStats().catch((e) => console.error("Failed to update stats", e));
+        }
+      ).open();
+    };
     const nestBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
-    nestBox.createDiv({ text: "Hierarchy", cls: "btm-metric-label" });
+    nestBox.createDiv({ text: "Tag Nesting", cls: "btm-metric-label" });
     const nestDetails = nestBox.createDiv({ cls: "btm-metric-details" });
-    createStatLink(nestDetails, stats.nestingStats.flat.length, "flat", stats.nestingStats.flat);
-    if (stats.inlineFiles.length > 0) {
-      const nestedLink = nestDetails.createEl("a", { text: `${stats.inlineFiles.length} notes with inline tags`, cls: "btm-stat-link" });
-      nestedLink.onclick = () => {
-        this.close();
-        new InlineTagsModal(this.app, stats.inlineFiles).open();
-      };
-    } else {
-      nestDetails.createSpan({ text: "0 notes with inline tags" });
+    if (stats.nestedFiles.length > 0) {
+      createStatLink(nestDetails, stats.nestingStats.flat.length, "flat", stats.nestingStats.flat);
     }
     if (stats.nestedFiles.length > 0) {
-      const realNestedLink = nestDetails.createEl("a", { text: `${stats.nestedFiles.length} with nested tags`, cls: "btm-stat-link" });
+      const realNestedLink = nestDetails.createEl("a", { text: `${stats.nestedFiles.length} notes with nested tags`, cls: "btm-stat-link" });
       realNestedLink.onclick = () => {
         this.close();
         new NestedFilesModal(this.app, stats.nestedFiles).open();
       };
     } else {
-      nestDetails.createSpan({ text: "0 with nested tags" });
+      nestDetails.createSpan({ text: "0 notes with nested tags" });
     }
     const locBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     locBox.createDiv({ text: "Locations", cls: "btm-metric-label" });
     const locDetails = locBox.createDiv({ cls: "btm-metric-details" });
     createStatLink(locDetails, stats.locationStats.frontmatter.length, "frontmatter", stats.locationStats.frontmatter);
     createStatLink(locDetails, stats.locationStats.body.length, "body", stats.locationStats.body);
+    if (stats.inlineFiles.length > 0) {
+      locBox.createDiv({ cls: "btm-separator" });
+      const nestedLink = locBox.createEl("a", {
+        text: `${stats.inlineFiles.length} notes with tags in body`,
+        cls: "btm-stat-link",
+        attr: { style: "display:block; margin-top:4px;" }
+      });
+      nestedLink.onclick = () => {
+        this.close();
+        new InlineTagsModal(this.app, stats.inlineFiles).open();
+      };
+    }
     const lengthBox = this.metricsGrid.createDiv({ cls: "btm-metric-box" });
     lengthBox.createDiv({ text: "Length", cls: "btm-metric-label" });
     const lengthDetails = lengthBox.createDiv({ cls: "btm-metric-details" });
     lengthDetails.createSpan({ text: `avg: ${stats.lengthStats.avgLength} chars ` });
     createStatLink(lengthDetails, stats.lengthStats.long.length, "long (>25)", stats.lengthStats.long);
-    this.checkInvalidTags();
-    this.checkEmptyTags();
+    this.checkInvalidTags().catch((e) => console.error("Failed to check invalid tags", e));
+    this.checkEmptyTags().catch((e) => console.error("Failed to check empty tags", e));
+  }
+  async checkInvalidTags() {
+    if (!this.invalidContentEl) return;
+    this.invalidContentEl.empty();
+    const invalidFiles = await this.plugin.findInvalidTagFormats();
+    if (invalidFiles.length > 0) {
+      this.invalidBlock.style.display = "block";
+      const warningRow = this.invalidContentEl.createDiv({ cls: "btm-invalid-warning" });
+      const iconEl = warningRow.createSpan({ cls: "btm-icon" });
+      (0, import_obsidian.setIcon)(iconEl, "alert-triangle");
+      warningRow.createSpan({ text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? "s" : ""} with invalid tags` });
+      const fixBtn = warningRow.createEl("button", { text: "FIX INVALID", cls: "mod-warning btm-fix-invalid-btn" });
+      fixBtn.onclick = () => {
+        this.close();
+        new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
+      };
+      const list = this.invalidContentEl.createDiv({ cls: "btm-invalid-mini-list" });
+      invalidFiles.slice(0, 3).forEach((f) => {
+        list.createDiv({ text: f.path, cls: "btm-invalid-mini-item" });
+      });
+      if (invalidFiles.length > 3) {
+        list.createDiv({ text: `... and ${invalidFiles.length - 3} more`, cls: "btm-more" });
+      }
+    } else {
+      this.invalidBlock.style.display = "none";
+    }
   }
   async checkEmptyTags() {
     const emptyFiles = await this.plugin.findEmptyTags();
@@ -1753,25 +2282,6 @@ var TagManagerModal = class extends import_obsidian.Modal {
           new EmptyTagsModal(this.app, emptyFiles).open();
         };
       }
-    }
-  }
-  async checkInvalidTags() {
-    const invalidFiles = await this.plugin.findInvalidTagFormats();
-    if (invalidFiles.length > 0) {
-      let invalidSection = this.statsEl.querySelector(".btm-invalid-section");
-      if (!invalidSection) {
-        invalidSection = this.statsEl.createDiv({ cls: "btm-invalid-section" });
-      }
-      invalidSection.empty();
-      const warningRow = invalidSection.createDiv({ cls: "btm-invalid-warning" });
-      const iconEl = warningRow.createSpan({ cls: "btm-icon" });
-      (0, import_obsidian.setIcon)(iconEl, "alert-triangle");
-      warningRow.createSpan({ text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? "s" : ""} with invalid tag format` });
-      const viewBtn = warningRow.createEl("button", { text: "View", cls: "btm-view-invalid-btn" });
-      viewBtn.onclick = () => {
-        this.close();
-        new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
-      };
     }
   }
   onClose() {
@@ -1796,7 +2306,7 @@ var TagLowercaseSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.separatorStrategy = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Remove Special Characters").addToggle((toggle) => toggle.setValue(this.plugin.settings.removeSpecialChars).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Remove Special Characters").setDesc("Removes everything except letters, numbers, hyphens (-), and underscores (_).").addToggle((toggle) => toggle.setValue(this.plugin.settings.removeSpecialChars).onChange(async (value) => {
       this.plugin.settings.removeSpecialChars = value;
       await this.plugin.saveSettings();
     }));
