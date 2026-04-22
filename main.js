@@ -32,6 +32,7 @@ var DEFAULT_SETTINGS = {
   caseStrategy: "lowercase",
   separatorStrategy: "preserve",
   removeSpecialChars: false,
+  flattenDiacritics: false,
   applyToNestedTags: true,
   tagFormat: "inline",
   aliases: {},
@@ -43,7 +44,8 @@ var DEFAULT_SETTINGS = {
     filePattern: ""
   },
   orphanThreshold: 2,
-  maxHistorySize: 50
+  maxHistorySize: 50,
+  historyExpirationDays: 7
 };
 var TAG_REGEX = /(^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
 var TagLowercasePlugin = class extends import_obsidian.Plugin {
@@ -53,6 +55,7 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
   }
   async onload() {
     await this.loadSettings();
+    await this.purgeExpiredHistory();
     this.addRibbonIcon("tags", "Bulk Tag Manager", () => {
       new TagManagerModal(this.app, this).open();
     });
@@ -108,13 +111,17 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     this.aliasDebounceTimer = setTimeout(() => this.applyAliases(file), 1e3);
   }
   async loadSettings() {
-    const saved = await this.loadData() || {};
+    const loaded = await this.loadData() || {};
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...saved,
+      ...loaded,
       scopeFilter: {
         ...DEFAULT_SETTINGS.scopeFilter,
-        ...saved.scopeFilter || {}
+        ...loaded.scopeFilter || {}
+      },
+      aliases: {
+        ...DEFAULT_SETTINGS.aliases,
+        ...loaded.aliases || {}
       }
     };
   }
@@ -126,38 +133,102 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     let files = this.app.vault.getMarkdownFiles();
     if (!this.settings.scopeFilter.enabled) return files;
     const { includeFolders, excludeFolders, filePattern } = this.settings.scopeFilter;
+    const normalizeFolder = (f) => f.endsWith("/") ? f : f + "/";
     if (includeFolders.length > 0) {
-      files = files.filter((f) => includeFolders.some((folder) => f.path.startsWith(folder)));
+      const normalizedIncludes = includeFolders.map(normalizeFolder);
+      files = files.filter((f) => normalizedIncludes.some((folder) => f.path.startsWith(folder) || f.path === folder.slice(0, -1)));
     }
     if (excludeFolders.length > 0) {
-      files = files.filter((f) => !excludeFolders.some((folder) => f.path.startsWith(folder)));
+      const normalizedExcludes = excludeFolders.map(normalizeFolder);
+      files = files.filter((f) => !normalizedExcludes.some((folder) => f.path.startsWith(folder) || f.path === folder.slice(0, -1)));
     }
     if (filePattern) {
-      try {
-        const regex = new RegExp(filePattern);
-        files = files.filter((f) => regex.test(f.path));
-      } catch (e) {
+      if (filePattern.length > 100 || (filePattern.match(/(\+|\*|\?)\1+/g) || []).length > 3) {
+        console.warn("File pattern is too complex, skipping regex filter.");
+      } else {
+        try {
+          const regex = new RegExp(filePattern);
+          files = files.filter((f) => regex.test(f.path));
+        } catch (e) {
+        }
       }
     }
     return files;
   }
   // --- History Management ---
   async addToHistory(record) {
+    const operationId = crypto.randomUUID();
     const fullRecord = {
-      ...record,
-      id: crypto.randomUUID(),
-      timestamp: Date.now()
+      id: operationId,
+      timestamp: Date.now(),
+      type: record.type,
+      description: record.description,
+      changes: record.changes.map((c) => ({ path: c.path })),
+      useExternalStorage: true
     };
+    try {
+      const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${operationId}`;
+      await this.app.vault.adapter.mkdir(historyDir);
+      for (let i = 0; i < record.changes.length; i++) {
+        const change = record.changes[i];
+        await this.app.vault.adapter.write(`${historyDir}/${i}.before`, change.before);
+        await this.app.vault.adapter.write(`${historyDir}/${i}.after`, change.after);
+      }
+      const manifest = record.changes.map((c) => ({ path: c.path }));
+      await this.app.vault.adapter.write(`${historyDir}/manifest.json`, JSON.stringify(manifest));
+      fullRecord.useExternalManifest = true;
+      fullRecord.changes = [];
+    } catch (e) {
+      console.error("Failed to save external history snapshots:", e);
+      new import_obsidian.Notice("Warning: Failed to save history snapshots. This operation may not be reversible.");
+      fullRecord.nonRevertible = true;
+    }
     this.settings.operationHistory.unshift(fullRecord);
     if (this.settings.operationHistory.length > this.settings.maxHistorySize) {
-      this.settings.operationHistory = this.settings.operationHistory.slice(0, this.settings.maxHistorySize);
+      const removed = this.settings.operationHistory.splice(this.settings.maxHistorySize);
+      for (const oldOp of removed) {
+        await this.deleteExternalHistory(oldOp.id);
+      }
     }
     let totalSize = JSON.stringify(this.settings.operationHistory).length;
-    while (totalSize > 5e6 && this.settings.operationHistory.length > 0) {
-      this.settings.operationHistory.pop();
+    while (totalSize > 2e6 && this.settings.operationHistory.length > 0) {
+      const oldOp = this.settings.operationHistory.pop();
+      if (oldOp) await this.deleteExternalHistory(oldOp.id);
       totalSize = JSON.stringify(this.settings.operationHistory).length;
     }
+    await this.purgeExpiredHistory();
     await this.saveSettings();
+  }
+  async purgeExpiredHistory() {
+    if (this.settings.historyExpirationDays <= 0) return;
+    const cutoff = Date.now() - this.settings.historyExpirationDays * 24 * 60 * 60 * 1e3;
+    const toKeep = [];
+    const toDelete = [];
+    for (const op of this.settings.operationHistory) {
+      if (op.timestamp >= cutoff) {
+        toKeep.push(op);
+      } else {
+        toDelete.push(op);
+      }
+    }
+    if (toDelete.length > 0) {
+      for (const op of toDelete) {
+        await this.deleteExternalHistory(op.id);
+      }
+      this.settings.operationHistory = toKeep;
+      await this.saveSettings();
+      console.log(`BTM: Purged ${toDelete.length} expired history records.`);
+    }
+  }
+  async deleteExternalHistory(id) {
+    try {
+      const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${id}`;
+      if (await this.app.vault.adapter.exists(historyDir)) {
+        await this.app.vault.adapter.rmdir(historyDir, true);
+      }
+    } catch (e) {
+      console.error(`Failed to delete external history ${id}:`, e);
+    }
   }
   async undoLastOperation() {
     if (this.settings.operationHistory.length === 0) {
@@ -167,16 +238,55 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     const lastOp = this.settings.operationHistory[0];
     let revertedCount = 0;
     new import_obsidian.Notice(`Reverting: ${lastOp.description}...`);
-    for (const change of lastOp.changes) {
+    if (lastOp.nonRevertible) {
+      new import_obsidian.Notice("This operation cannot be reverted (snapshots missing).");
+      return;
+    }
+    const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${lastOp.id}`;
+    let fileChanges = lastOp.changes;
+    if (lastOp.useExternalManifest) {
+      try {
+        const manifestPath = `${historyDir}/manifest.json`;
+        if (await this.app.vault.adapter.exists(manifestPath)) {
+          fileChanges = JSON.parse(await this.app.vault.adapter.read(manifestPath));
+        } else {
+          new import_obsidian.Notice("Critical error: History manifest missing.");
+          return;
+        }
+      } catch (e) {
+        console.error("Failed to load history manifest:", e);
+        new import_obsidian.Notice("Failed to load history manifest.");
+        return;
+      }
+    }
+    for (let i = 0; i < fileChanges.length; i++) {
+      const change = fileChanges[i];
       const file = this.app.vault.getAbstractFileByPath(change.path);
       if (file instanceof import_obsidian.TFile) {
         try {
-          await this.app.vault.modify(file, change.before);
-          revertedCount++;
+          let beforeContent;
+          if (lastOp.useExternalStorage) {
+            const snapshotPath = `${historyDir}/${i}.before`;
+            if (await this.app.vault.adapter.exists(snapshotPath)) {
+              beforeContent = await this.app.vault.adapter.read(snapshotPath);
+            } else {
+              console.warn(`Snapshot missing for ${change.path}`);
+              continue;
+            }
+          } else {
+            beforeContent = change.before;
+          }
+          if (beforeContent && beforeContent !== "(Snapshot omitted due to size)") {
+            await this.app.vault.modify(file, beforeContent);
+            revertedCount++;
+          }
         } catch (e) {
           console.error(`Failed to revert ${change.path}:`, e);
         }
       }
+    }
+    if (lastOp.useExternalStorage) {
+      await this.deleteExternalHistory(lastOp.id);
     }
     this.settings.operationHistory.shift();
     await this.saveSettings();
@@ -258,8 +368,7 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
       if (!(file instanceof import_obsidian.TFile)) continue;
       try {
         const before = await this.app.vault.read(file);
-        await this.processFile(file);
-        const after = await this.app.vault.read(file);
+        const after = await this.processFile(file);
         if (before !== after) {
           changes.push({ path: file.path, before, after });
         }
@@ -291,8 +400,7 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     for (const file of files) {
       try {
         const before = await this.app.vault.read(file);
-        await this.processFile(file);
-        const after = await this.app.vault.read(file);
+        const after = await this.processFile(file);
         if (before !== after) {
           changes.push({ path: file.path, before, after });
         }
@@ -339,6 +447,14 @@ ${sortedTags.join("\n")}
       new import_obsidian.Notice("Failed to create tag list file.");
     }
   }
+  isInCodeBlock(content, offset) {
+    const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
+    let m;
+    while ((m = codeBlockRegex.exec(content)) !== null) {
+      if (offset >= m.index && offset < m.index + m[0].length) return true;
+    }
+    return false;
+  }
   async renameTag(oldTag, newTag) {
     var _a, _b;
     const files = this.getFilteredFiles();
@@ -361,6 +477,7 @@ ${sortedTags.join("\n")}
       if ((_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a.tags) {
         const fmTags = Array.isArray(cache.frontmatter.tags) ? cache.frontmatter.tags : [cache.frontmatter.tags];
         hasFrontmatterTag = fmTags.some((t) => {
+          if (typeof t !== "string") return false;
           const raw = t.startsWith("#") ? t.substring(1) : t;
           return raw === search || raw.startsWith(search + "/");
         });
@@ -368,6 +485,7 @@ ${sortedTags.join("\n")}
       if ((_b = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _b.tag) {
         const fmTags = Array.isArray(cache.frontmatter.tag) ? cache.frontmatter.tag : [cache.frontmatter.tag];
         hasFrontmatterTag = hasFrontmatterTag || fmTags.some((t) => {
+          if (typeof t !== "string") return false;
           const raw = t.startsWith("#") ? t.substring(1) : t;
           return raw === search || raw.startsWith(search + "/");
         });
@@ -387,11 +505,13 @@ ${sortedTags.join("\n")}
     progressModal.open();
     let processedCount = 0;
     for (const file of matchingFiles) {
+      tagRegex.lastIndex = 0;
       try {
         const before = await this.app.vault.read(file);
         let modified = false;
         await this.app.fileManager.processFrontMatter(file, (fm) => {
           const processSingleTag = (t) => {
+            if (typeof t !== "string") return t;
             const hasHash = t.startsWith("#");
             const raw = hasHash ? t.substring(1) : t;
             if (raw === search) {
@@ -406,29 +526,39 @@ ${sortedTags.join("\n")}
           };
           if (fm.tags) {
             if (Array.isArray(fm.tags)) {
-              fm.tags = fm.tags.map(processSingleTag);
+              const newTags = fm.tags.map(processSingleTag);
+              if (newTags.some((t, i) => t !== fm.tags[i])) {
+                fm.tags = newTags;
+              }
             } else if (typeof fm.tags === "string") {
-              fm.tags = processSingleTag(fm.tags);
+              const newTag2 = processSingleTag(fm.tags);
+              if (newTag2 !== fm.tags) fm.tags = newTag2;
             }
           }
           if (fm.tag) {
             if (Array.isArray(fm.tag)) {
-              fm.tag = fm.tag.map(processSingleTag);
+              const newTags = fm.tag.map(processSingleTag);
+              if (newTags.some((t, i) => t !== fm.tag[i])) {
+                fm.tag = newTags;
+              }
             } else if (typeof fm.tag === "string") {
-              fm.tag = processSingleTag(fm.tag);
+              const newTag2 = processSingleTag(fm.tag);
+              if (newTag2 !== fm.tag) fm.tag = newTag2;
             }
           }
         });
+        let after = before;
         await this.app.vault.process(file, (data) => {
-          const newData = data.replace(tagRegex, (m, prefix, hash) => {
+          const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
+            if (this.isInCodeBlock(data, offset)) return m;
             modified = true;
             return prefix + hash + replace;
           });
           tagRegex.lastIndex = 0;
+          after = newData;
           return newData;
         });
         if (modified) {
-          const after = await this.app.vault.read(file);
           changes.push({ path: file.path, before, after });
         }
         processedCount++;
@@ -456,6 +586,13 @@ ${sortedTags.join("\n")}
       new import_obsidian.Notice("No valid source tags to merge.");
       return;
     }
+    const allVaultTags = this.app.metadataCache.getTags() || {};
+    for (const s of sourcesClean) {
+      if (!allVaultTags["#" + s]) {
+        new import_obsidian.Notice(`Tag #${s} does not exist in your vault.`);
+        return;
+      }
+    }
     new import_obsidian.Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
     const files = this.getFilteredFiles();
     const changes = [];
@@ -471,6 +608,7 @@ ${sortedTags.join("\n")}
         let modified = false;
         await this.app.fileManager.processFrontMatter(file, (fm) => {
           const processSingleTag = (t) => {
+            if (typeof t !== "string") return t;
             const hasHash = t.startsWith("#");
             const raw = hasHash ? t.substring(1) : t;
             for (const source of sourcesClean) {
@@ -486,23 +624,39 @@ ${sortedTags.join("\n")}
             }
             return t;
           };
-          if (fm.tags) {
-            if (Array.isArray(fm.tags)) {
-              fm.tags = fm.tags.map(processSingleTag);
-            } else if (typeof fm.tags === "string") {
-              fm.tags = processSingleTag(fm.tags);
+          const handleTagKey = (key) => {
+            if (fm[key]) {
+              if (Array.isArray(fm[key])) {
+                const newTags = fm[key].map(processSingleTag);
+                const uniqueTags = [];
+                const seen = /* @__PURE__ */ new Set();
+                for (const t of newTags) {
+                  const clean = typeof t === "string" && t.startsWith("#") ? t.substring(1) : t;
+                  if (!seen.has(clean)) {
+                    seen.add(clean);
+                    uniqueTags.push(t);
+                  }
+                }
+                if (uniqueTags.length !== fm[key].length || uniqueTags.some((t, i) => t !== fm[key][i])) {
+                  fm[key] = uniqueTags;
+                  modified = true;
+                }
+              } else if (typeof fm[key] === "string") {
+                const newTag = processSingleTag(fm[key]);
+                if (newTag !== fm[key]) {
+                  fm[key] = newTag;
+                  modified = true;
+                }
+              }
             }
-          }
-          if (fm.tag) {
-            if (Array.isArray(fm.tag)) {
-              fm.tag = fm.tag.map(processSingleTag);
-            } else if (typeof fm.tag === "string") {
-              fm.tag = processSingleTag(fm.tag);
-            }
-          }
+          };
+          handleTagKey("tags");
+          handleTagKey("tag");
         });
+        let after = before;
         await this.app.vault.process(file, (data) => {
-          const newData = data.replace(tagRegex, (match, prefix, hash, capturedTag) => {
+          let newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
+            if (this.isInCodeBlock(data, offset)) return match;
             for (const source of sourcesClean) {
               if (capturedTag === source || capturedTag.startsWith(source + "/")) {
                 modified = true;
@@ -515,11 +669,20 @@ ${sortedTags.join("\n")}
             }
             return match;
           });
+          if (modified) {
+            const targetTagEscaped = escapeRegExp(targetClean);
+            const duoRegex = new RegExp(`(#${targetTagEscaped})(\\s*[,;]?\\s*)(#${targetTagEscaped})(?=[\\s,;]|$|[^\\p{L}\\p{N}_-])`, "gu");
+            let prevData;
+            do {
+              prevData = newData;
+              newData = newData.replace(duoRegex, "$1");
+            } while (newData !== prevData);
+          }
           tagRegex.lastIndex = 0;
+          after = newData;
           return newData;
         });
         if (modified) {
-          const after = await this.app.vault.read(file);
           changes.push({ path: file.path, before, after });
         }
         processedCount++;
@@ -625,6 +788,10 @@ ${sortedTags.join("\n")}
     const files = this.getFilteredFiles();
     const changes = [];
     let regex;
+    if (pattern.length > 100 || (pattern.match(/(\+|\*|\?)\1+/g) || []).length > 3) {
+      new import_obsidian.Notice("Regex pattern is too complex. Please simplify.");
+      return;
+    }
     try {
       regex = new RegExp(pattern, "g");
     } catch (e) {
@@ -638,8 +805,10 @@ ${sortedTags.join("\n")}
     for (const file of files) {
       try {
         const before = await this.app.vault.read(file);
+        let after = before;
         await this.app.vault.process(file, (data) => {
-          return data.replace(TAG_REGEX, (fullMatch, prefix, tag) => {
+          const newData = data.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
+            if (this.isInCodeBlock(data, offset)) return fullMatch;
             const clean = tag.substring(1);
             const newTag = clean.replace(regex, safeReplacement);
             if (newTag !== clean) {
@@ -647,16 +816,19 @@ ${sortedTags.join("\n")}
             }
             return fullMatch;
           });
+          after = newData;
+          return newData;
         });
-        const after = await this.app.vault.read(file);
         if (before !== after) {
           changes.push({ path: file.path, before, after });
         }
+        processedCount++;
+        progressModal.update(processedCount);
       } catch (e) {
         console.error(`batchRename failed on ${file.path}`, e);
+        processedCount++;
+        progressModal.update(processedCount);
       }
-      processedCount++;
-      progressModal.update(processedCount);
     }
     progressModal.close();
     if (changes.length > 0) {
@@ -690,6 +862,19 @@ ${sortedTags.join("\n")}
         currentLevel = existingNode.children;
       }
     }
+    const accumulate = (nodes) => {
+      let total = 0;
+      for (const node of nodes) {
+        const childrenCount = accumulate(node.children);
+        node.count += childrenCount;
+        total += node.count;
+      }
+      return total;
+    };
+    root.forEach((node) => {
+      const childrenCount = accumulate(node.children);
+      node.count += childrenCount;
+    });
     return root;
   }
   findOrphanedTags() {
@@ -697,7 +882,23 @@ ${sortedTags.join("\n")}
     return Object.entries(tags).filter(([, count]) => count < this.settings.orphanThreshold).map(([tag, count]) => ({ tag, count })).sort((a, b) => a.count - b.count);
   }
   async analyzeTagStandardization(files) {
-    const tags = Object.keys(this.app.metadataCache.getTags() || {});
+    const tagSet = /* @__PURE__ */ new Set();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (cache == null ? void 0 : cache.tags) {
+        cache.tags.forEach((t) => tagSet.add(t.tag));
+      }
+      if (cache == null ? void 0 : cache.frontmatter) {
+        const fm = cache.frontmatter;
+        const extractTags = (val) => {
+          if (typeof val === "string") val.split(",").forEach((t) => tagSet.add(t.trim().startsWith("#") ? t.trim() : "#" + t.trim()));
+          else if (Array.isArray(val)) val.forEach((t) => typeof t === "string" && tagSet.add(t.startsWith("#") ? t : "#" + t));
+        };
+        if (fm.tags) extractTags(fm.tags);
+        if (fm.tag) extractTags(fm.tag);
+      }
+    }
+    const tags = Array.from(tagSet);
     const totalTags = tags.length;
     const stats = {
       totalTags,
@@ -780,8 +981,8 @@ ${sortedTags.join("\n")}
       else if (rawTag.length <= 25) stats.lengthStats.medium.push(tag);
       else stats.lengthStats.long.push(tag);
     }
-    const fmTags = /* @__PURE__ */ new Set();
-    const bodyTags = /* @__PURE__ */ new Set();
+    const fmTagsSet = /* @__PURE__ */ new Set();
+    const bodyTagsSet = /* @__PURE__ */ new Set();
     for (const file of files) {
       const cache = this.app.metadataCache.getFileCache(file);
       if (!cache) continue;
@@ -800,14 +1001,14 @@ ${sortedTags.join("\n")}
         }
         list.forEach((t) => {
           const clean = t.startsWith("#") ? t.substring(1) : t;
-          fmTags.add(clean);
+          fmTagsSet.add(clean);
           if (clean.includes("/")) fileNestedSet.add(clean);
         });
       }
       if (cache.tags) {
         cache.tags.forEach((t) => {
           const clean = t.tag.startsWith("#") ? t.tag.substring(1) : t.tag;
-          bodyTags.add(clean);
+          bodyTagsSet.add(clean);
           fileInlineSet.add(clean);
           if (clean.includes("/")) fileNestedSet.add(clean);
         });
@@ -827,8 +1028,8 @@ ${sortedTags.join("\n")}
         });
       }
     }
-    stats.locationStats.frontmatter = Array.from(fmTags).sort();
-    stats.locationStats.body = Array.from(bodyTags).sort();
+    stats.locationStats.frontmatter = Array.from(fmTagsSet).sort();
+    stats.locationStats.body = Array.from(bodyTagsSet).sort();
     stats.lengthStats.avgLength = totalTags > 0 ? Math.round(totalLength / totalTags) : 0;
     const calcConsistency = (arrays) => {
       if (totalTags === 0) return 100;
@@ -838,7 +1039,8 @@ ${sortedTags.join("\n")}
     stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
     const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
     const dominantSep = Math.max(...sepArrays.map((a) => a.length));
-    stats.separatorStats.consistency = totalTags > 0 ? Math.round((dominantSep + (stats.separatorStats.both.length === 0 ? 0 : 0)) / totalTags * 100) : 100;
+    const inconsistentSep = stats.separatorStats.both.length;
+    stats.separatorStats.consistency = totalTags > 0 ? Math.round(dominantSep / totalTags * 100) : 100;
     stats.specialCharStats.consistency = totalTags > 0 ? Math.round(stats.specialCharStats.clean.length / totalTags * 100) : 100;
     return stats;
   }
@@ -861,9 +1063,15 @@ ${sortedTags.join("\n")}
       };
       const fm = cache == null ? void 0 : cache.frontmatter;
       if (fm) {
+        const seenInFM = /* @__PURE__ */ new Set();
         const checkFMKey = (key, value) => {
           if (value === void 0 || value === null) return;
           if (typeof value === "string") {
+            const clean = value.startsWith("#") ? value.substring(1) : value;
+            if (seenInFM.has(clean)) {
+              issues.push({ description: `Front matter contains duplicate tag: "${clean}"`, tag: value });
+            }
+            seenInFM.add(clean);
             if (value.startsWith("#")) {
               issues.push({ description: `Front matter "${key}" starts with # (invalid YAML syntax)`, tag: value });
             }
@@ -871,10 +1079,16 @@ ${sortedTags.join("\n")}
             if (err) issues.push(err);
           } else if (Array.isArray(value)) {
             value.forEach((t) => {
-              if (typeof t === "string" && t.startsWith("#")) {
-                issues.push({ description: `Front matter list item "${t}" starts with #`, tag: String(t) });
+              const tagStr = String(t);
+              const clean = tagStr.startsWith("#") ? tagStr.substring(1) : tagStr;
+              if (seenInFM.has(clean)) {
+                issues.push({ description: `Front matter contains duplicate tag: "${clean}"`, tag: tagStr });
               }
-              const err = validateTagString(String(t), `Front matter list item`);
+              seenInFM.add(clean);
+              if (typeof t === "string" && t.startsWith("#")) {
+                issues.push({ description: `Front matter list item "${t}" starts with #`, tag: tagStr });
+              }
+              const err = validateTagString(tagStr, `Front matter list item`);
               if (err) issues.push(err);
             });
           }
@@ -972,8 +1186,10 @@ ${sortedTags.join("\n")}
     const aliases = this.settings.aliases;
     if (Object.keys(aliases).length === 0) return;
     let modified = false;
+    const before = await this.app.vault.read(file);
     await this.app.fileManager.processFrontMatter(file, (fm) => {
       const processSingleTag = (t) => {
+        if (typeof t !== "string") return t;
         const hasHash = t.startsWith("#");
         const raw = hasHash ? t.substring(1) : t;
         if (aliases[raw]) {
@@ -983,42 +1199,88 @@ ${sortedTags.join("\n")}
         return t;
       };
       if (fm.tags) {
-        fm.tags = Array.isArray(fm.tags) ? fm.tags.map(processSingleTag) : processSingleTag(fm.tags);
+        if (Array.isArray(fm.tags)) {
+          const newTags = fm.tags.map(processSingleTag);
+          if (newTags.some((t, i) => t !== fm.tags[i])) fm.tags = newTags;
+        } else if (typeof fm.tags === "string") {
+          const newTag = processSingleTag(fm.tags);
+          if (newTag !== fm.tags) fm.tags = newTag;
+        }
       }
       if (fm.tag) {
-        fm.tag = Array.isArray(fm.tag) ? fm.tag.map(processSingleTag) : processSingleTag(fm.tag);
+        if (Array.isArray(fm.tag)) {
+          const newTags = fm.tag.map(processSingleTag);
+          if (newTags.some((t, i) => t !== fm.tag[i])) fm.tag = newTags;
+        } else if (typeof fm.tag === "string") {
+          const newTag = processSingleTag(fm.tag);
+          if (newTag !== fm.tag) fm.tag = newTag;
+        }
       }
     });
+    await this.app.vault.process(file, (data) => {
+      let result = data;
+      for (const [alias, canonical] of Object.entries(aliases)) {
+        const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, "gu");
+        result = result.replace(regex, (m, prefix, hash, captured, offset) => {
+          if (this.isInCodeBlock(data, offset)) return m;
+          if (canonical !== alias) modified = true;
+          return prefix + hash + canonical;
+        });
+      }
+      return result;
+    });
     if (modified) {
-      await this.app.vault.process(file, (data) => {
-        let result = data;
-        for (const [alias, canonical] of Object.entries(aliases)) {
-          const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, "gu");
-          result = result.replace(regex, (m, prefix, hash) => prefix + hash + canonical);
-        }
-        return result;
-      });
+      const after = await this.app.vault.read(file);
+      if (before !== after) {
+        await this.addToHistory({
+          type: "rename",
+          description: `Auto-alias: ${file.name}`,
+          changes: [{ path: file.path, before, after }]
+        });
+      }
     }
   }
   // --- Core Processing ---
   // Issue 1: Accept overrides instead of mutating settings
   async processFile(file, overrides) {
+    let finalContent = "";
     await this.app.fileManager.processFrontMatter(file, (fm) => {
       const processSingleTag = (t) => {
+        if (typeof t !== "string") return t;
         const hasHash = t.startsWith("#");
         const clean = hasHash ? t.substring(1) : t;
         const converted = this.convertTagContent(clean, overrides);
         return hasHash ? "#" + converted : converted;
       };
       if (fm.tags) {
-        fm.tags = Array.isArray(fm.tags) ? fm.tags.map(processSingleTag) : processSingleTag(fm.tags);
+        if (Array.isArray(fm.tags)) {
+          const newTags = fm.tags.map(processSingleTag);
+          if (newTags.some((t, i) => t !== fm.tags[i])) {
+            fm.tags = newTags;
+          }
+        } else if (typeof fm.tags === "string") {
+          const newTag = processSingleTag(fm.tags);
+          if (newTag !== fm.tags) fm.tags = newTag;
+        }
       }
       if (fm.tag) {
-        fm.tag = Array.isArray(fm.tag) ? fm.tag.map(processSingleTag) : processSingleTag(fm.tag);
+        if (Array.isArray(fm.tag)) {
+          const newTags = fm.tag.map(processSingleTag);
+          if (newTags.some((t, i) => t !== fm.tag[i])) {
+            fm.tag = newTags;
+          }
+        } else if (typeof fm.tag === "string") {
+          const newTag = processSingleTag(fm.tag);
+          if (newTag !== fm.tag) fm.tag = newTag;
+        }
       }
     });
-    await this.app.vault.process(file, (data) => this.transformContent(data, overrides));
+    await this.app.vault.process(file, (data) => {
+      finalContent = this.transformContent(data, overrides);
+      return finalContent;
+    });
+    return finalContent;
   }
   convertTagContent(tagContent, overrides) {
     const parts = tagContent.split("/");
@@ -1032,6 +1294,9 @@ ${sortedTags.join("\n")}
     let s = segment;
     if (this.settings.removeSpecialChars) {
       s = s.replace(/[^\p{L}\p{N}\-_]/gu, "");
+    }
+    if (this.settings.flattenDiacritics) {
+      s = s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
     }
     if (this.settings.separatorStrategy === "snake") {
       s = s.replace(/-/g, "_");
@@ -1074,8 +1339,7 @@ ${sortedTags.join("\n")}
     for (const file of files) {
       try {
         const before = await this.app.vault.read(file);
-        await this.processFile(file, { caseStrategy: targetCase });
-        const after = await this.app.vault.read(file);
+        const after = await this.processFile(file, { caseStrategy: targetCase });
         if (before !== after) {
           changes.push({ path: file.path, before, after });
         }
@@ -1083,6 +1347,8 @@ ${sortedTags.join("\n")}
         progressModal.update(processedCount);
       } catch (e) {
         console.error(`Failed to convert case in ${file.path}`, e);
+        processedCount++;
+        progressModal.update(processedCount);
       }
     }
     progressModal.close();
@@ -1192,6 +1458,12 @@ var HistoryModal = class extends import_obsidian.Modal {
     contentEl.empty();
     contentEl.addClass("btm-history-modal");
     new import_obsidian.Setting(contentEl).setName("Operation History").setHeading();
+    if (this.plugin.settings.historyExpirationDays > 0) {
+      contentEl.createEl("p", {
+        text: `History is automatically cleared every ${this.plugin.settings.historyExpirationDays} days.`,
+        cls: "btm-history-clarification"
+      }).style.color = "var(--text-muted)";
+    }
     if (this.plugin.settings.operationHistory.length === 0) {
       contentEl.createEl("p", { text: "No operations recorded yet." });
       return;
@@ -1203,13 +1475,24 @@ var HistoryModal = class extends import_obsidian.Modal {
       const timeStr = date.toLocaleDateString() + " " + date.toLocaleTimeString();
       itemEl.createDiv({ cls: "btm-history-time", text: timeStr });
       itemEl.createDiv({ cls: "btm-history-desc", text: op.description });
-      itemEl.createDiv({ cls: "btm-history-files", text: `${op.changes.length} files affected` });
+      if (op.useExternalManifest) {
+        itemEl.createDiv({ cls: "btm-history-files", text: `Operation recorded externally` });
+      } else {
+        itemEl.createDiv({ cls: "btm-history-files", text: `${op.changes.length} files affected` });
+      }
       if (op === this.plugin.settings.operationHistory[0]) {
-        const revertBtn = itemEl.createEl("button", { text: "Undo", cls: "btm-revert-btn" });
-        revertBtn.onclick = async () => {
-          this.close();
-          await this.plugin.undoLastOperation();
-        };
+        if (op.nonRevertible) {
+          itemEl.createDiv({
+            cls: "btm-history-warning",
+            text: "\u26A0 Snapshots omitted due to size - cannot undo."
+          }).style.color = "var(--text-warning)";
+        } else {
+          const revertBtn = itemEl.createEl("button", { text: "Undo", cls: "btm-revert-btn" });
+          revertBtn.onclick = async () => {
+            this.close();
+            await this.plugin.undoLastOperation();
+          };
+        }
       }
     }
   }
@@ -2005,6 +2288,11 @@ var TagManagerModal = class extends import_obsidian.Modal {
       await this.plugin.saveSettings();
       this.updateStats().catch((e) => console.error("Failed to update stats", e));
     }));
+    new import_obsidian.Setting(settingsBox).setName("Flatten Diacritics").setDesc("Converts accented characters to their plain equivalents (e.g., \xE1 \u2192 a, \xE5 \u2192 a).").addToggle((toggle) => toggle.setValue(this.plugin.settings.flattenDiacritics).onChange(async (value) => {
+      this.plugin.settings.flattenDiacritics = value;
+      await this.plugin.saveSettings();
+      this.updateStats().catch((e) => console.error("Failed to update stats", e));
+    }));
     new import_obsidian.Setting(settingsBox).setName("Apply to Nested Tags").addToggle((toggle) => toggle.setValue(this.plugin.settings.applyToNestedTags).onChange(async (value) => {
       this.plugin.settings.applyToNestedTags = value;
       await this.plugin.saveSettings();
@@ -2310,6 +2598,10 @@ var TagLowercaseSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.removeSpecialChars = value;
       await this.plugin.saveSettings();
     }));
+    new import_obsidian.Setting(containerEl).setName("Flatten Diacritics").setDesc("Converts accented characters to their plain equivalents (e.g., \xE1 \u2192 a, \xE5 \u2192 a).").addToggle((toggle) => toggle.setValue(this.plugin.settings.flattenDiacritics).onChange(async (value) => {
+      this.plugin.settings.flattenDiacritics = value;
+      await this.plugin.saveSettings();
+    }));
     new import_obsidian.Setting(containerEl).setName("Apply to Nested Tags").addToggle((toggle) => toggle.setValue(this.plugin.settings.applyToNestedTags).onChange(async (value) => {
       this.plugin.settings.applyToNestedTags = value;
       await this.plugin.saveSettings();
@@ -2325,6 +2617,10 @@ var TagLowercaseSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("History").setHeading();
     new import_obsidian.Setting(containerEl).setName("Max History Size").setDesc("Number of operations to keep in history").addSlider((slider) => slider.setLimits(10, 100, 10).setValue(this.plugin.settings.maxHistorySize).setDynamicTooltip().onChange(async (value) => {
       this.plugin.settings.maxHistorySize = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("History Expiration (Days)").setDesc("Automatically delete history older than this many days (0 to disable).").addSlider((slider) => slider.setLimits(0, 30, 1).setValue(this.plugin.settings.historyExpirationDays).setDynamicTooltip().onChange(async (value) => {
+      this.plugin.settings.historyExpirationDays = value;
       await this.plugin.saveSettings();
     }));
     new import_obsidian.Setting(containerEl).setName("Orphan Threshold").setDesc("Tags used fewer times than this are considered orphaned").addSlider((slider) => slider.setLimits(1, 10, 1).setValue(this.plugin.settings.orphanThreshold).setDynamicTooltip().onChange(async (value) => {

@@ -4,10 +4,12 @@ import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, TextCompo
 
 interface OperationRecord {
     id: string;
-    type: 'rename' | 'merge' | 'convert' | 'pattern' | 'delete';
     timestamp: number;
+    type: string;
     description: string;
-    changes: FileChange[];
+    changes: { path: string }[];
+    useExternalStorage?: boolean;
+    useExternalManifest?: boolean;
 }
 
 interface FileChange {
@@ -96,6 +98,7 @@ interface TagLowercaseSettings {
     caseStrategy: 'lowercase' | 'uppercase' | 'none';
     separatorStrategy: 'preserve' | 'snake' | 'kebab';
     removeSpecialChars: boolean;
+    flattenDiacritics: boolean;
     applyToNestedTags: boolean;
     tagFormat: 'inline' | 'list';
     aliases: Record<string, string>;
@@ -103,12 +106,14 @@ interface TagLowercaseSettings {
     scopeFilter: ScopeFilter;
     orphanThreshold: number;
     maxHistorySize: number;
+    historyExpirationDays: number;
 }
 
 const DEFAULT_SETTINGS: TagLowercaseSettings = {
     caseStrategy: 'lowercase',
     separatorStrategy: 'preserve',
     removeSpecialChars: false,
+    flattenDiacritics: false,
     applyToNestedTags: true,
     tagFormat: 'inline',
     aliases: {},
@@ -120,7 +125,8 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
         filePattern: ''
     },
     orphanThreshold: 2,
-    maxHistorySize: 50
+    maxHistorySize: 50,
+    historyExpirationDays: 7
 };
 
 // Improved regex that skips code blocks
@@ -131,6 +137,7 @@ export default class TagLowercasePlugin extends Plugin {
 
     async onload() {
         await this.loadSettings();
+        await this.purgeExpiredHistory();
 
         this.addRibbonIcon('tags', 'Bulk Tag Manager', () => {
             new TagManagerModal(this.app, this).open();
@@ -201,13 +208,17 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async loadSettings() {
-        const saved = await this.loadData() || {};
+        const loaded = await this.loadData() || {};
         this.settings = {
             ...DEFAULT_SETTINGS,
-            ...saved,
+            ...loaded,
             scopeFilter: { 
                 ...DEFAULT_SETTINGS.scopeFilter, 
-                ...(saved.scopeFilter || {}) 
+                ...(loaded.scopeFilter || {}) 
+            },
+            aliases: {
+                ...DEFAULT_SETTINGS.aliases,
+                ...(loaded.aliases || {})
             }
         };
     }
@@ -225,19 +236,28 @@ export default class TagLowercasePlugin extends Plugin {
 
         const { includeFolders, excludeFolders, filePattern } = this.settings.scopeFilter;
 
+        const normalizeFolder = (f: string) => f.endsWith('/') ? f : f + '/';
+
         if (includeFolders.length > 0) {
-            files = files.filter(f => includeFolders.some(folder => f.path.startsWith(folder)));
+            const normalizedIncludes = includeFolders.map(normalizeFolder);
+            files = files.filter(f => normalizedIncludes.some(folder => f.path.startsWith(folder) || f.path === folder.slice(0, -1)));
         }
 
         if (excludeFolders.length > 0) {
-            files = files.filter(f => !excludeFolders.some(folder => f.path.startsWith(folder)));
+            const normalizedExcludes = excludeFolders.map(normalizeFolder);
+            files = files.filter(f => !normalizedExcludes.some(folder => f.path.startsWith(folder) || f.path === folder.slice(0, -1)));
         }
 
         if (filePattern) {
-            try {
-                const regex = new RegExp(filePattern);
-                files = files.filter(f => regex.test(f.path));
-            } catch { /* invalid regex, ignore */ }
+            // Issue 12: Basic ReDoS protection
+            if (filePattern.length > 100 || (filePattern.match(/(\+|\*|\?)\1+/g) || []).length > 3) {
+                console.warn('File pattern is too complex, skipping regex filter.');
+            } else {
+                try {
+                    const regex = new RegExp(filePattern);
+                    files = files.filter(f => regex.test(f.path));
+                } catch { /* invalid regex, ignore */ }
+            }
         }
 
         return files;
@@ -245,29 +265,98 @@ export default class TagLowercasePlugin extends Plugin {
 
     // --- History Management ---
 
-    async addToHistory(record: Omit<OperationRecord, 'id' | 'timestamp'>) {
+    async addToHistory(record: Omit<OperationRecord, 'id' | 'timestamp' | 'changes'> & { changes: FileChange[] }) {
+        const operationId = crypto.randomUUID();
         const fullRecord: OperationRecord = {
-            ...record,
-            id: crypto.randomUUID(),
-            timestamp: Date.now()
+            id: operationId,
+            timestamp: Date.now(),
+            type: record.type,
+            description: record.description,
+            changes: record.changes.map(c => ({ path: c.path })),
+            useExternalStorage: true
         };
+
+        // External Storage Implementation
+        try {
+            const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${operationId}`;
+            await this.app.vault.adapter.mkdir(historyDir);
+
+            for (let i = 0; i < record.changes.length; i++) {
+                const change = record.changes[i];
+                // Store both before and after for completeness
+                await this.app.vault.adapter.write(`${historyDir}/${i}.before`, change.before);
+                await this.app.vault.adapter.write(`${historyDir}/${i}.after`, change.after);
+            }
+
+            // Save the manifest (file paths) externally
+            const manifest = record.changes.map(c => ({ path: c.path }));
+            await this.app.vault.adapter.write(`${historyDir}/manifest.json`, JSON.stringify(manifest));
+            fullRecord.useExternalManifest = true;
+            fullRecord.changes = []; // Clear paths from data.json
+        } catch (e) {
+            console.error('Failed to save external history snapshots:', e);
+            new Notice('Warning: Failed to save history snapshots. This operation may not be reversible.');
+            (fullRecord as any).nonRevertible = true;
+        }
 
         this.settings.operationHistory.unshift(fullRecord);
 
-        // Issue 3: Unbounded history growth
         // 1. Cap by length
         if (this.settings.operationHistory.length > this.settings.maxHistorySize) {
-            this.settings.operationHistory = this.settings.operationHistory.slice(0, this.settings.maxHistorySize);
+            const removed = this.settings.operationHistory.splice(this.settings.maxHistorySize);
+            for (const oldOp of removed) {
+                await this.deleteExternalHistory(oldOp.id);
+            }
         }
 
-        // 2. Cap by total JSON size (approx 5MB limit)
+        // 2. Cap by total JSON size (though data.json is now much smaller)
         let totalSize = JSON.stringify(this.settings.operationHistory).length;
-        while (totalSize > 5_000_000 && this.settings.operationHistory.length > 0) {
-            this.settings.operationHistory.pop(); // Remove oldest
+        while (totalSize > 2_000_000 && this.settings.operationHistory.length > 0) {
+            const oldOp = this.settings.operationHistory.pop();
+            if (oldOp) await this.deleteExternalHistory(oldOp.id);
             totalSize = JSON.stringify(this.settings.operationHistory).length;
         }
 
+        // 3. Purge by age
+        await this.purgeExpiredHistory();
+
         await this.saveSettings();
+    }
+
+    async purgeExpiredHistory() {
+        if (this.settings.historyExpirationDays <= 0) return;
+
+        const cutoff = Date.now() - (this.settings.historyExpirationDays * 24 * 60 * 60 * 1000);
+        const toKeep = [];
+        const toDelete = [];
+
+        for (const op of this.settings.operationHistory) {
+            if (op.timestamp >= cutoff) {
+                toKeep.push(op);
+            } else {
+                toDelete.push(op);
+            }
+        }
+
+        if (toDelete.length > 0) {
+            for (const op of toDelete) {
+                await this.deleteExternalHistory(op.id);
+            }
+            this.settings.operationHistory = toKeep;
+            await this.saveSettings();
+            console.log(`BTM: Purged ${toDelete.length} expired history records.`);
+        }
+    }
+
+    async deleteExternalHistory(id: string) {
+        try {
+            const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${id}`;
+            if (await this.app.vault.adapter.exists(historyDir)) {
+                await this.app.vault.adapter.rmdir(historyDir, true);
+            }
+        } catch (e) {
+            console.error(`Failed to delete external history ${id}:`, e);
+        }
     }
 
     async undoLastOperation() {
@@ -281,16 +370,64 @@ export default class TagLowercasePlugin extends Plugin {
 
         new Notice(`Reverting: ${lastOp.description}...`);
 
-        for (const change of lastOp.changes) {
+        if ((lastOp as any).nonRevertible) {
+            new Notice('This operation cannot be reverted (snapshots missing).');
+            return;
+        }
+
+        const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${lastOp.id}`;
+        let fileChanges = lastOp.changes;
+
+        // Load manifest if stored externally
+        if (lastOp.useExternalManifest) {
+            try {
+                const manifestPath = `${historyDir}/manifest.json`;
+                if (await this.app.vault.adapter.exists(manifestPath)) {
+                    fileChanges = JSON.parse(await this.app.vault.adapter.read(manifestPath));
+                } else {
+                    new Notice('Critical error: History manifest missing.');
+                    return;
+                }
+            } catch (e) {
+                console.error('Failed to load history manifest:', e);
+                new Notice('Failed to load history manifest.');
+                return;
+            }
+        }
+
+        for (let i = 0; i < fileChanges.length; i++) {
+            const change = fileChanges[i];
             const file = this.app.vault.getAbstractFileByPath(change.path);
+            
             if (file instanceof TFile) {
                 try {
-                    await this.app.vault.modify(file, change.before);
-                    revertedCount++;
+                    let beforeContent: string;
+                    if (lastOp.useExternalStorage) {
+                        const snapshotPath = `${historyDir}/${i}.before`;
+                        if (await this.app.vault.adapter.exists(snapshotPath)) {
+                            beforeContent = await this.app.vault.adapter.read(snapshotPath);
+                        } else {
+                            console.warn(`Snapshot missing for ${change.path}`);
+                            continue;
+                        }
+                    } else {
+                        // Support legacy snapshots (if any still exist)
+                        beforeContent = (change as any).before;
+                    }
+
+                    if (beforeContent && beforeContent !== '(Snapshot omitted due to size)') {
+                        await this.app.vault.modify(file, beforeContent);
+                        revertedCount++;
+                    }
                 } catch (e) {
                     console.error(`Failed to revert ${change.path}:`, e);
                 }
             }
+        }
+
+        // Cleanup
+        if (lastOp.useExternalStorage) {
+            await this.deleteExternalHistory(lastOp.id);
         }
 
         this.settings.operationHistory.shift();
@@ -395,8 +532,7 @@ export default class TagLowercasePlugin extends Plugin {
 
             try {
                 const before = await this.app.vault.read(file);
-                await this.processFile(file);
-                const after = await this.app.vault.read(file);
+                const after = await this.processFile(file);
 
                 if (before !== after) {
                     changes.push({ path: file.path, before, after });
@@ -437,8 +573,7 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             try {
                 const before = await this.app.vault.read(file);
-                await this.processFile(file);
-                const after = await this.app.vault.read(file);
+                const after = await this.processFile(file);
 
                 if (before !== after) {
                     changes.push({ path: file.path, before, after });
@@ -493,6 +628,15 @@ export default class TagLowercasePlugin extends Plugin {
         }
     }
 
+    private isInCodeBlock(content: string, offset: number): boolean {
+        const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
+        let m: RegExpExecArray | null;
+        while ((m = codeBlockRegex.exec(content)) !== null) {
+            if (offset >= m.index && offset < m.index + m[0].length) return true;
+        }
+        return false;
+    }
+
     async renameTag(oldTag: string, newTag: string) {
         const files = this.getFilteredFiles();
         const changes: FileChange[] = [];
@@ -524,6 +668,7 @@ export default class TagLowercasePlugin extends Plugin {
                     ? cache.frontmatter.tags
                     : [cache.frontmatter.tags];
                 hasFrontmatterTag = fmTags.some((t: string) => {
+                    if (typeof t !== 'string') return false;
                     const raw = t.startsWith('#') ? t.substring(1) : t;
                     return raw === search || raw.startsWith(search + '/');
                 });
@@ -533,6 +678,7 @@ export default class TagLowercasePlugin extends Plugin {
                     ? cache.frontmatter.tag
                     : [cache.frontmatter.tag];
                 hasFrontmatterTag = hasFrontmatterTag || fmTags.some((t: string) => {
+                    if (typeof t !== 'string') return false;
                     const raw = t.startsWith('#') ? t.substring(1) : t;
                     return raw === search || raw.startsWith(search + '/');
                 });
@@ -560,12 +706,14 @@ export default class TagLowercasePlugin extends Plugin {
         let processedCount = 0;
 
         for (const file of matchingFiles) {
+            tagRegex.lastIndex = 0; // Issue 3: Explicitly reset at start of each iteration
             try {
                 const before = await this.app.vault.read(file);
                 let modified = false;
 
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
                     const processSingleTag = (t: string): string => {
+                        if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
                         if (raw === search) {
@@ -579,33 +727,46 @@ export default class TagLowercasePlugin extends Plugin {
                         return t;
                     };
 
+                    // Issue 8: Only assign back if something actually changed
                     if (fm.tags) {
                         if (Array.isArray(fm.tags)) {
-                            fm.tags = fm.tags.map(processSingleTag);
+                            const newTags = fm.tags.map(processSingleTag);
+                            if (newTags.some((t, i) => t !== fm.tags[i])) {
+                                fm.tags = newTags;
+                            }
                         } else if (typeof fm.tags === 'string') {
-                            fm.tags = processSingleTag(fm.tags);
+                            const newTag = processSingleTag(fm.tags);
+                            if (newTag !== fm.tags) fm.tags = newTag;
                         }
                     }
                     if (fm.tag) {
                         if (Array.isArray(fm.tag)) {
-                            fm.tag = fm.tag.map(processSingleTag);
+                            const newTags = fm.tag.map(processSingleTag);
+                            if (newTags.some((t, i) => t !== fm.tag[i])) {
+                                fm.tag = newTags;
+                            }
                         } else if (typeof fm.tag === 'string') {
-                            fm.tag = processSingleTag(fm.tag);
+                            const newTag = processSingleTag(fm.tag);
+                            if (newTag !== fm.tag) fm.tag = newTag;
                         }
                     }
                 });
 
+                let after = before;
                 await this.app.vault.process(file, (data) => {
-                    const newData = data.replace(tagRegex, (m, prefix, hash) => {
+                    const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
+                        // Issue 1: Code blocks are not protected
+                        if (this.isInCodeBlock(data, offset)) return m;
+                        
                         modified = true;
                         return prefix + hash + replace;
                     });
                     tagRegex.lastIndex = 0; // Reset regex state
+                    after = newData; // Issue 7: Capture after content inside process
                     return newData;
                 });
 
                 if (modified) {
-                    const after = await this.app.vault.read(file);
                     changes.push({ path: file.path, before, after });
                 }
 
@@ -643,6 +804,15 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
+        // Validation: Ensure all source tags exist in the vault
+        const allVaultTags = (this.app.metadataCache as any).getTags() || {};
+        for (const s of sourcesClean) {
+            if (!allVaultTags['#' + s]) {
+                new Notice(`Tag #${s} does not exist in your vault.`);
+                return;
+            }
+        }
+
         new Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
 
         const files = this.getFilteredFiles();
@@ -666,6 +836,7 @@ export default class TagLowercasePlugin extends Plugin {
                 // Process frontmatter tags
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
                     const processSingleTag = (t: string): string => {
+                        if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
 
@@ -683,25 +854,47 @@ export default class TagLowercasePlugin extends Plugin {
                         return t;
                     };
 
-                    if (fm.tags) {
-                        if (Array.isArray(fm.tags)) {
-                            fm.tags = fm.tags.map(processSingleTag);
-                        } else if (typeof fm.tags === 'string') {
-                            fm.tags = processSingleTag(fm.tags);
+                    // Issue 8: Only assign back if something actually changed
+                    const handleTagKey = (key: string) => {
+                        if (fm[key]) {
+                            if (Array.isArray(fm[key])) {
+                                const newTags = fm[key].map(processSingleTag);
+                                // Deduplicate
+                                const uniqueTags = [];
+                                const seen = new Set();
+                                for (const t of newTags) {
+                                    const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
+                                    if (!seen.has(clean)) {
+                                        seen.add(clean);
+                                        uniqueTags.push(t);
+                                    }
+                                }
+                                
+                                if (uniqueTags.length !== fm[key].length || uniqueTags.some((t, i) => t !== fm[key][i])) {
+                                    fm[key] = uniqueTags;
+                                    modified = true;
+                                }
+                            } else if (typeof fm[key] === 'string') {
+                                const newTag = processSingleTag(fm[key]);
+                                if (newTag !== fm[key]) {
+                                    fm[key] = newTag;
+                                    modified = true;
+                                }
+                            }
                         }
-                    }
-                    if (fm.tag) {
-                        if (Array.isArray(fm.tag)) {
-                            fm.tag = fm.tag.map(processSingleTag);
-                        } else if (typeof fm.tag === 'string') {
-                            fm.tag = processSingleTag(fm.tag);
-                        }
-                    }
+                    };
+
+                    handleTagKey('tags');
+                    handleTagKey('tag');
                 });
 
                 // Process inline tags
+                let after = before;
                 await this.app.vault.process(file, (data) => {
-                    const newData = data.replace(tagRegex, (match, prefix, hash, capturedTag) => {
+                    let newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
+                        // Issue 1: Code blocks are not protected
+                        if (this.isInCodeBlock(data, offset)) return match;
+
                         // Find which source tag matched and replace with target
                         for (const source of sourcesClean) {
                             if (capturedTag === source || capturedTag.startsWith(source + '/')) {
@@ -716,12 +909,26 @@ export default class TagLowercasePlugin extends Plugin {
                         }
                         return match;
                     });
+                    
+                    // Collapse consecutive identical tags (e.g. #target #target -> #target)
+                    // This handles the "merge creates duplicates" issue in the body
+                    if (modified) {
+                        const targetTagEscaped = escapeRegExp(targetClean);
+                        // Matches #target followed by whitespace/punctuation and then #target again
+                        const duoRegex = new RegExp(`(#${targetTagEscaped})(\\s*[,;]?\\s*)(#${targetTagEscaped})(?=[\\s,;]|$|[^\\p{L}\\p{N}_-])`, 'gu');
+                        let prevData;
+                        do {
+                            prevData = newData;
+                            newData = newData.replace(duoRegex, '$1');
+                        } while (newData !== prevData);
+                    }
+
                     tagRegex.lastIndex = 0;
+                    after = newData; // Issue 7: Capture after content
                     return newData;
                 });
 
                 if (modified) {
-                    const after = await this.app.vault.read(file);
                     changes.push({ path: file.path, before, after });
                 }
 
@@ -854,6 +1061,12 @@ export default class TagLowercasePlugin extends Plugin {
         const changes: FileChange[] = [];
         let regex: RegExp;
 
+        // Issue 12: Basic ReDoS protection
+        if (pattern.length > 100 || (pattern.match(/(\+|\*|\?)\1+/g) || []).length > 3) {
+            new Notice('Regex pattern is too complex. Please simplify.');
+            return;
+        }
+
         try {
             regex = new RegExp(pattern, 'g');
         } catch {
@@ -872,9 +1085,13 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             try {
                 const before = await this.app.vault.read(file);
+                let after = before;
 
                 await this.app.vault.process(file, (data) => {
-                    return data.replace(TAG_REGEX, (fullMatch, prefix, tag) => {
+                    const newData = data.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
+                        // Issue 1: Code block protection
+                        if (this.isInCodeBlock(data, offset)) return fullMatch;
+
                         const clean = tag.substring(1);
                         const newTag = clean.replace(regex, safeReplacement);
                         if (newTag !== clean) {
@@ -882,18 +1099,21 @@ export default class TagLowercasePlugin extends Plugin {
                         }
                         return fullMatch;
                     });
+                    after = newData; // Issue 7: Capture after content
+                    return newData;
                 });
 
-                const after = await this.app.vault.read(file);
                 if (before !== after) {
                     changes.push({ path: file.path, before, after });
                 }
+                
+                processedCount++;
+                progressModal.update(processedCount);
             } catch (e) {
                 console.error(`batchRename failed on ${file.path}`, e);
+                processedCount++;
+                progressModal.update(processedCount);
             }
-
-            processedCount++;
-            progressModal.update(processedCount);
         }
 
         progressModal.close();
@@ -939,6 +1159,23 @@ export default class TagLowercasePlugin extends Plugin {
             }
         }
 
+        // Issue 11: Accumulate counts from children to parents
+        const accumulate = (nodes: TagNode[]): number => {
+            let total = 0;
+            for (const node of nodes) {
+                const childrenCount = accumulate(node.children);
+                node.count += childrenCount;
+                total += node.count;
+            }
+            return total;
+        };
+        
+        // We don't want the total sum of all roots, just want each root to have its tree sum
+        root.forEach(node => {
+            const childrenCount = accumulate(node.children);
+            node.count += childrenCount;
+        });
+
         return root;
     }
 
@@ -951,7 +1188,25 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async analyzeTagStandardization(files: TFile[]): Promise<TagStandardizationStats> {
-        const tags = Object.keys((this.app.metadataCache as any).getTags() || {});
+        // Issue 10: Scope filter ignored for global tag string stats
+        // Derive unique tags only from the provided (filtered) files
+        const tagSet = new Set<string>();
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (cache?.tags) {
+                cache.tags.forEach(t => tagSet.add(t.tag));
+            }
+            if (cache?.frontmatter) {
+                const fm = cache.frontmatter;
+                const extractTags = (val: any) => {
+                    if (typeof val === 'string') val.split(',').forEach(t => tagSet.add(t.trim().startsWith('#') ? t.trim() : '#' + t.trim()));
+                    else if (Array.isArray(val)) val.forEach(t => typeof t === 'string' && tagSet.add(t.startsWith('#') ? t : '#' + t));
+                };
+                if (fm.tags) extractTags(fm.tags);
+                if (fm.tag) extractTags(fm.tag);
+            }
+        }
+        const tags = Array.from(tagSet);
         const totalTags = tags.length;
 
         // Initialize arrays
@@ -1064,8 +1319,8 @@ export default class TagLowercasePlugin extends Plugin {
 
         // 2. Analyze Location (Frontmatter vs Body)
         // Use Sets to count unique tags in each location
-        const fmTags = new Set<string>();
-        const bodyTags = new Set<string>();
+        const fmTagsSet = new Set<string>();
+        const bodyTagsSet = new Set<string>();
 
         // We iterate files which is safer for determining current usages
         for (const file of files) {
@@ -1090,7 +1345,7 @@ export default class TagLowercasePlugin extends Plugin {
 
                 list.forEach(t => {
                     const clean = t.startsWith('#') ? t.substring(1) : t;
-                    fmTags.add(clean);
+                    fmTagsSet.add(clean);
                     if (clean.includes('/')) fileNestedSet.add(clean);
                 });
             }
@@ -1099,7 +1354,7 @@ export default class TagLowercasePlugin extends Plugin {
             if (cache.tags) {
                 cache.tags.forEach(t => {
                     const clean = t.tag.startsWith('#') ? t.tag.substring(1) : t.tag;
-                    bodyTags.add(clean);
+                    bodyTagsSet.add(clean);
                     fileInlineSet.add(clean);
                     if (clean.includes('/')) fileNestedSet.add(clean);
                 });
@@ -1122,8 +1377,8 @@ export default class TagLowercasePlugin extends Plugin {
             }
         }
 
-        stats.locationStats.frontmatter = Array.from(fmTags).sort();
-        stats.locationStats.body = Array.from(bodyTags).sort();
+        stats.locationStats.frontmatter = Array.from(fmTagsSet).sort();
+        stats.locationStats.body = Array.from(bodyTagsSet).sort();
 
         // Calculate Average
         stats.lengthStats.avgLength = totalTags > 0 ? Math.round(totalLength / totalTags) : 0;
@@ -1138,10 +1393,12 @@ export default class TagLowercasePlugin extends Plugin {
         stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
 
         // For separators
+        // Issue 9: separatorStats.consistency calculation was wrong
         const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
         const dominantSep = Math.max(...sepArrays.map(a => a.length));
+        const inconsistentSep = stats.separatorStats.both.length;
         stats.separatorStats.consistency = totalTags > 0 
-            ? Math.round(((dominantSep + (stats.separatorStats.both.length === 0 ? 0 : 0)) / totalTags) * 100)
+            ? Math.round((dominantSep / (totalTags)) * 100)
             : 100;
 
         stats.specialCharStats.consistency = totalTags > 0 
@@ -1180,9 +1437,16 @@ export default class TagLowercasePlugin extends Plugin {
             // 4. Incorrect Front Matter Syntax (only checking 'tags' and 'tag' keys)
             const fm = cache?.frontmatter;
             if (fm) {
+                const seenInFM = new Set<string>();
                 const checkFMKey = (key: string, value: any) => {
                     if (value === undefined || value === null) return;
                     if (typeof value === 'string') {
+                        const clean = value.startsWith('#') ? value.substring(1) : value;
+                        if (seenInFM.has(clean)) {
+                            issues.push({ description: `Front matter contains duplicate tag: "${clean}"`, tag: value });
+                        }
+                        seenInFM.add(clean);
+
                         if (value.startsWith('#')) {
                             issues.push({ description: `Front matter "${key}" starts with # (invalid YAML syntax)`, tag: value });
                         }
@@ -1190,10 +1454,18 @@ export default class TagLowercasePlugin extends Plugin {
                         if (err) issues.push(err);
                     } else if (Array.isArray(value)) {
                         value.forEach(t => {
-                            if (typeof t === 'string' && t.startsWith('#')) {
-                                issues.push({ description: `Front matter list item "${t}" starts with #`, tag: String(t) });
+                            const tagStr = String(t);
+                            const clean = tagStr.startsWith('#') ? tagStr.substring(1) : tagStr;
+                            
+                            if (seenInFM.has(clean)) {
+                                issues.push({ description: `Front matter contains duplicate tag: "${clean}"`, tag: tagStr });
                             }
-                            const err = validateTagString(String(t), `Front matter list item`);
+                            seenInFM.add(clean);
+
+                            if (typeof t === 'string' && t.startsWith('#')) {
+                                issues.push({ description: `Front matter list item "${t}" starts with #`, tag: tagStr });
+                            }
+                            const err = validateTagString(tagStr, `Front matter list item`);
                             if (err) issues.push(err);
                         });
                     }
@@ -1321,9 +1593,11 @@ export default class TagLowercasePlugin extends Plugin {
         if (Object.keys(aliases).length === 0) return;
 
         let modified = false;
+        const before = await this.app.vault.read(file);
 
         await this.app.fileManager.processFrontMatter(file, (fm) => {
             const processSingleTag = (t: string): string => {
+                if (typeof t !== 'string') return t;
                 const hasHash = t.startsWith('#');
                 const raw = hasHash ? t.substring(1) : t;
                 if (aliases[raw]) {
@@ -1333,50 +1607,103 @@ export default class TagLowercasePlugin extends Plugin {
                 return t;
             };
 
+            // Issue 8: Idempotency check
             if (fm.tags) {
-                fm.tags = Array.isArray(fm.tags) ? fm.tags.map(processSingleTag) : processSingleTag(fm.tags);
+                if (Array.isArray(fm.tags)) {
+                    const newTags = fm.tags.map(processSingleTag);
+                    if (newTags.some((t, i) => t !== fm.tags[i])) fm.tags = newTags;
+                } else if (typeof fm.tags === 'string') {
+                    const newTag = processSingleTag(fm.tags);
+                    if (newTag !== fm.tags) fm.tags = newTag;
+                }
             }
             if (fm.tag) {
-                fm.tag = Array.isArray(fm.tag) ? fm.tag.map(processSingleTag) : processSingleTag(fm.tag);
+                if (Array.isArray(fm.tag)) {
+                    const newTags = fm.tag.map(processSingleTag);
+                    if (newTags.some((t, i) => t !== fm.tag[i])) fm.tag = newTags;
+                } else if (typeof fm.tag === 'string') {
+                    const newTag = processSingleTag(fm.tag);
+                    if (newTag !== fm.tag) fm.tag = newTag;
+                }
             }
         });
 
+        // Also process body
+        // Issue 4: Batch all alias replacements into a single vault write
+        await this.app.vault.process(file, (data) => {
+            let result = data;
+            for (const [alias, canonical] of Object.entries(aliases)) {
+                const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, 'gu');
+                
+                result = result.replace(regex, (m, prefix, hash, captured, offset) => {
+                    // Issue 1: Code block protection
+                    if (this.isInCodeBlock(data, offset)) return m;
+                    
+                    if (canonical !== alias) modified = true;
+                    return prefix + hash + canonical;
+                });
+            }
+            return result;
+        });
+
         if (modified) {
-            // Also process body
-            // Issue 4: Batch all alias replacements into a single vault write
-            await this.app.vault.process(file, (data) => {
-                let result = data;
-                for (const [alias, canonical] of Object.entries(aliases)) {
-                    const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, 'gu');
-                    result = result.replace(regex, (m, prefix, hash) => prefix + hash + canonical);
-                }
-                return result;
-            });
+            const after = await this.app.vault.read(file);
+            if (before !== after) {
+                await this.addToHistory({
+                    type: 'rename',
+                    description: `Auto-alias: ${file.name}`,
+                    changes: [{ path: file.path, before, after }]
+                });
+            }
         }
     }
 
     // --- Core Processing ---
 
     // Issue 1: Accept overrides instead of mutating settings
-    async processFile(file: TFile, overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }) {
+    async processFile(file: TFile, overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }): Promise<string> {
+        let finalContent = '';
         await this.app.fileManager.processFrontMatter(file, (fm) => {
             const processSingleTag = (t: string): string => {
+                if (typeof t !== 'string') return t;
                 const hasHash = t.startsWith('#');
                 const clean = hasHash ? t.substring(1) : t;
                 const converted = this.convertTagContent(clean, overrides);
                 return hasHash ? '#' + converted : converted;
             };
 
+            // Issue 8: Only assign back if something actually changed
             if (fm.tags) {
-                fm.tags = Array.isArray(fm.tags) ? fm.tags.map(processSingleTag) : processSingleTag(fm.tags);
+                if (Array.isArray(fm.tags)) {
+                    const newTags = fm.tags.map(processSingleTag);
+                    if (newTags.some((t, i) => t !== fm.tags[i])) {
+                        fm.tags = newTags;
+                    }
+                } else if (typeof fm.tags === 'string') {
+                    const newTag = processSingleTag(fm.tags);
+                    if (newTag !== fm.tags) fm.tags = newTag;
+                }
             }
             if (fm.tag) {
-                fm.tag = Array.isArray(fm.tag) ? fm.tag.map(processSingleTag) : processSingleTag(fm.tag);
+                if (Array.isArray(fm.tag)) {
+                    const newTags = fm.tag.map(processSingleTag);
+                    if (newTags.some((t, i) => t !== fm.tag[i])) {
+                        fm.tag = newTags;
+                    }
+                } else if (typeof fm.tag === 'string') {
+                    const newTag = processSingleTag(fm.tag);
+                    if (newTag !== fm.tag) fm.tag = newTag;
+                }
             }
         });
 
-        await this.app.vault.process(file, (data) => this.transformContent(data, overrides));
+        await this.app.vault.process(file, (data) => {
+            finalContent = this.transformContent(data, overrides);
+            return finalContent;
+        });
+        
+        return finalContent;
     }
 
     convertTagContent(tagContent: string, overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }): string {
@@ -1392,6 +1719,9 @@ export default class TagLowercasePlugin extends Plugin {
         let s = segment;
         if (this.settings.removeSpecialChars) {
             s = s.replace(/[^\p{L}\p{N}\-_]/gu, '');
+        }
+        if (this.settings.flattenDiacritics) {
+            s = s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
         }
         if (this.settings.separatorStrategy === 'snake') {
             s = s.replace(/-/g, '_');
@@ -1451,9 +1781,8 @@ export default class TagLowercasePlugin extends Plugin {
                 const before = await this.app.vault.read(file);
                 
                 // Issue 1: Use overrides instead of mutating shared state
-                await this.processFile(file, { caseStrategy: targetCase });
+                const after = await this.processFile(file, { caseStrategy: targetCase });
 
-                const after = await this.app.vault.read(file);
                 if (before !== after) {
                     changes.push({ path: file.path, before, after });
                 }
@@ -1461,6 +1790,8 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             } catch (e) {
                 console.error(`Failed to convert case in ${file.path}`, e);
+                processedCount++;
+                progressModal.update(processedCount);
             }
         }
         progressModal.close();
@@ -1608,6 +1939,13 @@ class HistoryModal extends Modal {
         contentEl.addClass('btm-history-modal');
 
         new Setting(contentEl).setName('Operation History').setHeading();
+        
+        if (this.plugin.settings.historyExpirationDays > 0) {
+            contentEl.createEl('p', { 
+                text: `History is automatically cleared every ${this.plugin.settings.historyExpirationDays} days.`,
+                cls: 'btm-history-clarification'
+            }).style.color = 'var(--text-muted)';
+        }
 
         if (this.plugin.settings.operationHistory.length === 0) {
             contentEl.createEl('p', { text: 'No operations recorded yet.' });
@@ -1624,14 +1962,28 @@ class HistoryModal extends Modal {
 
             itemEl.createDiv({ cls: 'btm-history-time', text: timeStr });
             itemEl.createDiv({ cls: 'btm-history-desc', text: op.description });
-            itemEl.createDiv({ cls: 'btm-history-files', text: `${op.changes.length} files affected` });
+            
+            // If paths are cleared from data.json, we need to handle count display
+            // We can't easily know the count without reading the manifest, so we check if it's external
+            if (op.useExternalManifest) {
+                itemEl.createDiv({ cls: 'btm-history-files', text: `Operation recorded externally` });
+            } else {
+                itemEl.createDiv({ cls: 'btm-history-files', text: `${op.changes.length} files affected` });
+            }
 
             if (op === this.plugin.settings.operationHistory[0]) {
-                const revertBtn = itemEl.createEl('button', { text: 'Undo', cls: 'btm-revert-btn' });
-                revertBtn.onclick = async () => {
-                    this.close();
-                    await this.plugin.undoLastOperation();
-                };
+                if ((op as any).nonRevertible) {
+                    itemEl.createDiv({ 
+                        cls: 'btm-history-warning', 
+                        text: '⚠ Snapshots omitted due to size - cannot undo.' 
+                    }).style.color = 'var(--text-warning)';
+                } else {
+                    const revertBtn = itemEl.createEl('button', { text: 'Undo', cls: 'btm-revert-btn' });
+                    revertBtn.onclick = async () => {
+                        this.close();
+                        await this.plugin.undoLastOperation();
+                    };
+                }
             }
         }
     }
@@ -2759,6 +3111,17 @@ class TagManagerModal extends Modal {
                 }));
 
         new Setting(settingsBox)
+            .setName('Flatten Diacritics')
+            .setDesc('Converts accented characters to their plain equivalents (e.g., á → a, å → a).')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.flattenDiacritics)
+                .onChange(async (value) => {
+                    this.plugin.settings.flattenDiacritics = value;
+                    await this.plugin.saveSettings();
+                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                }));
+
+        new Setting(settingsBox)
             .setName('Apply to Nested Tags')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.applyToNestedTags)
@@ -3163,6 +3526,16 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
+            .setName('Flatten Diacritics')
+            .setDesc('Converts accented characters to their plain equivalents (e.g., á → a, å → a).')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.flattenDiacritics)
+                .onChange(async (value) => {
+                    this.plugin.settings.flattenDiacritics = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
             .setName('Apply to Nested Tags')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.applyToNestedTags)
@@ -3200,6 +3573,18 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .setDynamicTooltip()
                 .onChange(async (value) => {
                     this.plugin.settings.maxHistorySize = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('History Expiration (Days)')
+            .setDesc('Automatically delete history older than this many days (0 to disable).')
+            .addSlider(slider => slider
+                .setLimits(0, 30, 1)
+                .setValue(this.plugin.settings.historyExpirationDays)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.historyExpirationDays = value;
                     await this.plugin.saveSettings();
                 }));
 
