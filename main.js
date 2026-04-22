@@ -299,36 +299,34 @@ var TagLowercasePlugin = class extends import_obsidian.Plugin {
     for (const file of files) {
       const content = await this.app.vault.read(file);
       const newContent = this.transformContent(content);
+      const changes = [];
       if (content !== newContent) {
-        const changes = this.diffContent(content, newContent);
-        affectedFiles.push({ path: file.path, changes, included: true });
-      } else {
-        const cache = this.app.metadataCache.getFileCache(file);
-        if (cache == null ? void 0 : cache.frontmatter) {
-          let fmModified = false;
-          const checkTag = (t) => {
-            const clean = t.startsWith("#") ? t.substring(1) : t;
-            const converted = this.convertTagContent(clean);
-            const final = t.startsWith("#") ? "#" + converted : converted;
-            if (final !== t) fmModified = true;
-          };
-          const fm = cache.frontmatter;
-          if (fm.tags) {
-            if (Array.isArray(fm.tags)) fm.tags.forEach((t) => typeof t === "string" && checkTag(t));
-            else if (typeof fm.tags === "string") checkTag(fm.tags);
-          }
-          if (fm.tag) {
-            if (Array.isArray(fm.tag)) fm.tag.forEach((t) => typeof t === "string" && checkTag(t));
-            else if (typeof fm.tag === "string") checkTag(fm.tag);
-          }
-          if (fmModified) {
-            affectedFiles.push({
-              path: file.path,
-              changes: [{ line: 1, before: "(Frontmatter tags)", after: "(Will be standardized)" }],
-              included: true
-            });
-          }
+        changes.push(...this.diffContent(content, newContent));
+      }
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (cache == null ? void 0 : cache.frontmatter) {
+        let fmModified = false;
+        const checkTag = (t) => {
+          const clean = t.startsWith("#") ? t.substring(1) : t;
+          const converted = this.convertTagContent(clean);
+          const final = t.startsWith("#") ? "#" + converted : converted;
+          if (final !== t) fmModified = true;
+        };
+        const fm = cache.frontmatter;
+        if (fm.tags) {
+          if (Array.isArray(fm.tags)) fm.tags.forEach((t) => typeof t === "string" && checkTag(t));
+          else if (typeof fm.tags === "string") checkTag(fm.tags);
         }
+        if (fm.tag) {
+          if (Array.isArray(fm.tag)) fm.tag.forEach((t) => typeof t === "string" && checkTag(t));
+          else if (typeof fm.tag === "string") checkTag(fm.tag);
+        }
+        if (fmModified) {
+          changes.push({ line: 1, before: "(Frontmatter tags)", after: "(Will be standardized)" });
+        }
+      }
+      if (changes.length > 0) {
+        affectedFiles.push({ path: file.path, changes, included: true });
       }
     }
     return {
@@ -447,11 +445,18 @@ ${sortedTags.join("\n")}
       new import_obsidian.Notice("Failed to create tag list file.");
     }
   }
-  isInCodeBlock(content, offset) {
-    const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
+  getCodeBlockRanges(content) {
+    const regex = /```[\s\S]*?```|`[^`\n]+`/g;
+    const ranges = [];
     let m;
-    while ((m = codeBlockRegex.exec(content)) !== null) {
-      if (offset >= m.index && offset < m.index + m[0].length) return true;
+    while ((m = regex.exec(content)) !== null) {
+      ranges.push({ start: m.index, end: m.index + m[0].length });
+    }
+    return ranges;
+  }
+  isInCodeBlockRange(offset, ranges) {
+    for (const range of ranges) {
+      if (offset >= range.start && offset < range.end) return true;
     }
     return false;
   }
@@ -549,8 +554,9 @@ ${sortedTags.join("\n")}
         });
         let after = before;
         await this.app.vault.process(file, (data) => {
+          const codeBlockRanges = this.getCodeBlockRanges(data);
           const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
-            if (this.isInCodeBlock(data, offset)) return m;
+            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
             modified = true;
             return prefix + hash + replace;
           });
@@ -586,16 +592,34 @@ ${sortedTags.join("\n")}
       new import_obsidian.Notice("No valid source tags to merge.");
       return;
     }
-    const allVaultTags = this.app.metadataCache.getTags() || {};
-    for (const s of sourcesClean) {
-      if (!allVaultTags["#" + s]) {
-        new import_obsidian.Notice(`Tag #${s} does not exist in your vault.`);
-        return;
-      }
-    }
-    new import_obsidian.Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
     const files = this.getFilteredFiles();
     const changes = [];
+    const tagsInScope = /* @__PURE__ */ new Set();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (cache == null ? void 0 : cache.tags) {
+        cache.tags.forEach((t) => tagsInScope.add(t.tag.startsWith("#") ? t.tag.substring(1) : t.tag));
+      }
+      if (cache == null ? void 0 : cache.frontmatter) {
+        const extract = (val) => {
+          if (typeof val === "string") val.split(",").forEach((v) => tagsInScope.add(v.trim().startsWith("#") ? v.trim().substring(1) : v.trim()));
+          else if (Array.isArray(val)) val.forEach((v) => typeof v === "string" && tagsInScope.add(v.startsWith("#") ? v.substring(1) : v));
+        };
+        if (cache.frontmatter.tags) extract(cache.frontmatter.tags);
+        if (cache.frontmatter.tag) extract(cache.frontmatter.tag);
+      }
+    }
+    const missingTags = [];
+    for (const s of sourcesClean) {
+      if (!tagsInScope.has(s)) {
+        missingTags.push("#" + s);
+      }
+    }
+    if (missingTags.length > 0) {
+      new import_obsidian.Notice(`Merge aborted: ${missingTags.join(", ")} not found in current scope. Check for typos or scope filters.`);
+      return;
+    }
+    new import_obsidian.Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
     const progressModal = new ProgressModal(this.app, files.length);
     progressModal.open();
     let processedCount = 0;
@@ -655,8 +679,9 @@ ${sortedTags.join("\n")}
         });
         let after = before;
         await this.app.vault.process(file, (data) => {
+          const codeBlockRanges = this.getCodeBlockRanges(data);
           let newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
-            if (this.isInCodeBlock(data, offset)) return match;
+            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
             for (const source of sourcesClean) {
               if (capturedTag === source || capturedTag.startsWith(source + "/")) {
                 modified = true;
@@ -700,8 +725,10 @@ ${sortedTags.join("\n")}
         description: `Merge ${sourcesClean.map((s) => "#" + s).join(", ")} \u2192 #${targetClean}`,
         changes
       });
+      new import_obsidian.Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
+    } else {
+      new import_obsidian.Notice(`No files were modified. (Tags might not exist in the current scope)`);
     }
-    new import_obsidian.Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
   }
   async deleteTags(tagsToDelete) {
     const cleanTags = tagsToDelete.map((t) => t.startsWith("#") ? t.substring(1) : t).filter((t) => t.length > 0);
@@ -753,15 +780,18 @@ ${sortedTags.join("\n")}
             }
           }
         });
+        let after = before;
         await this.app.vault.process(file, (data) => {
-          const newData = data.replace(tagRegex, (match, prefix) => {
+          const codeBlockRanges = this.getCodeBlockRanges(data);
+          const newData = data.replace(tagRegex, (match, prefix, hash, tag, offset) => {
+            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
             modified = true;
             return prefix;
           });
+          after = newData;
           return newData;
         });
         if (modified) {
-          const after = await this.app.vault.read(file);
           changes.push({ path: file.path, before, after });
         }
         processedCount++;
@@ -801,16 +831,16 @@ ${sortedTags.join("\n")}
     const progressModal = new ProgressModal(this.app, files.length);
     progressModal.open();
     let processedCount = 0;
-    const safeReplacement = replacement.replace(/\$/g, "$$$$");
     for (const file of files) {
       try {
         const before = await this.app.vault.read(file);
         let after = before;
         await this.app.vault.process(file, (data) => {
+          const codeBlockRanges = this.getCodeBlockRanges(data);
           const newData = data.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
-            if (this.isInCodeBlock(data, offset)) return fullMatch;
+            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return fullMatch;
             const clean = tag.substring(1);
-            const newTag = clean.replace(regex, safeReplacement);
+            const newTag = clean.replace(regex, replacement);
             if (newTag !== clean) {
               return prefix + "#" + newTag;
             }
@@ -1040,14 +1070,14 @@ ${sortedTags.join("\n")}
     const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
     const dominantSep = Math.max(...sepArrays.map((a) => a.length));
     const inconsistentSep = stats.separatorStats.both.length;
-    stats.separatorStats.consistency = totalTags > 0 ? Math.round(dominantSep / totalTags * 100) : 100;
+    stats.separatorStats.consistency = totalTags > 0 ? Math.min(100, Math.round(dominantSep / (totalTags - inconsistentSep || 1) * 100)) : 100;
     stats.specialCharStats.consistency = totalTags > 0 ? Math.round(stats.specialCharStats.clean.length / totalTags * 100) : 100;
     return stats;
   }
   async findInvalidTagFormats() {
     const invalidFiles = [];
     const files = this.getFilteredFiles();
-    const INVALID_CHARS = /[!@£$%^&*()=+[\]{}:;'",.<>?|\\\\]/;
+    const INVALID_CHARS = /[!@£$%^&*()=+[\]{}:;'",.<>?|\\]/;
     const PURE_NUMERIC = /^\d+$/;
     for (const file of files) {
       const issues = [];
@@ -1162,7 +1192,7 @@ ${sortedTags.join("\n")}
       }
     }
     progressModal.close();
-    new import_obsidian.Notice(`Converted tags to ${format === "inline" ? "Inline Array" : "YAML List"} in ${files.length} files.`);
+    new import_obsidian.Notice(`Converted tags to ${format === "inline" ? "Inline Array" : "YAML List"} in ${count} files.`);
   }
   // Automated Standardization removed per user request: "THE PLUGIN SHOULD NOT FIX INVALID TAGS"
   async findEmptyTags() {
@@ -1186,7 +1216,6 @@ ${sortedTags.join("\n")}
     const aliases = this.settings.aliases;
     if (Object.keys(aliases).length === 0) return;
     let modified = false;
-    const before = await this.app.vault.read(file);
     await this.app.fileManager.processFrontMatter(file, (fm) => {
       const processSingleTag = (t) => {
         if (typeof t !== "string") return t;
@@ -1218,28 +1247,19 @@ ${sortedTags.join("\n")}
       }
     });
     await this.app.vault.process(file, (data) => {
+      const codeBlockRanges = this.getCodeBlockRanges(data);
       let result = data;
       for (const [alias, canonical] of Object.entries(aliases)) {
         const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, "gu");
         result = result.replace(regex, (m, prefix, hash, captured, offset) => {
-          if (this.isInCodeBlock(data, offset)) return m;
+          if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
           if (canonical !== alias) modified = true;
           return prefix + hash + canonical;
         });
       }
       return result;
     });
-    if (modified) {
-      const after = await this.app.vault.read(file);
-      if (before !== after) {
-        await this.addToHistory({
-          type: "rename",
-          description: `Auto-alias: ${file.name}`,
-          changes: [{ path: file.path, before, after }]
-        });
-      }
-    }
   }
   // --- Core Processing ---
   // Issue 1: Accept overrides instead of mutating settings
@@ -1404,6 +1424,10 @@ var PreviewModal = class extends import_obsidian.Modal {
     contentEl.addClass("btm-preview-modal");
     new import_obsidian.Setting(contentEl).setName("Preview Changes").setHeading();
     contentEl.createEl("p", { text: `${this.preview.affectedFiles.length} files will be modified (${this.preview.totalChanges} changes)` });
+    const warning = contentEl.createEl("p", { cls: "btm-preview-warning" });
+    warning.setText("Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.");
+    warning.style.color = "var(--text-warning)";
+    warning.style.fontSize = "var(--font-ui-smaller)";
     const listEl = contentEl.createDiv({ cls: "btm-preview-list" });
     for (const file of this.preview.affectedFiles) {
       const fileEl = listEl.createDiv({ cls: "btm-preview-file" });

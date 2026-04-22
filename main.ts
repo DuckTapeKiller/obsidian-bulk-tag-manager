@@ -441,45 +441,44 @@ export default class TagLowercasePlugin extends Plugin {
     async previewConversion(): Promise<PreviewResult> {
         const files = this.getFilteredFiles();
         const affectedFiles: PreviewFile[] = [];
-
         for (const file of files) {
             const content = await this.app.vault.read(file);
             const newContent = this.transformContent(content);
+            const changes: { line: number; before: string; after: string }[] = [];
 
             if (content !== newContent) {
-                const changes = this.diffContent(content, newContent);
-                affectedFiles.push({ path: file.path, changes, included: true });
-            } else {
-                // Check frontmatter changes (Frontmatter not changed by transformContent directly)
-                const cache = this.app.metadataCache.getFileCache(file);
-                if (cache?.frontmatter) {
-                    let fmModified = false;
-                    const checkTag = (t: string) => {
-                        const clean = t.startsWith('#') ? t.substring(1) : t;
-                        const converted = this.convertTagContent(clean);
-                        const final = t.startsWith('#') ? '#' + converted : converted;
-                        if (final !== t) fmModified = true;
-                    };
+                changes.push(...this.diffContent(content, newContent));
+            }
 
-                    const fm = cache.frontmatter;
-                    if (fm.tags) {
-                        if (Array.isArray(fm.tags)) fm.tags.forEach((t: any) => typeof t === 'string' && checkTag(t));
-                        else if (typeof fm.tags === 'string') checkTag(fm.tags);
-                    }
-                    if (fm.tag) {
-                        if (Array.isArray(fm.tag)) fm.tag.forEach((t: any) => typeof t === 'string' && checkTag(t));
-                        else if (typeof fm.tag === 'string') checkTag(fm.tag);
-                    }
+            // Always check frontmatter independently
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (cache?.frontmatter) {
+                let fmModified = false;
+                const checkTag = (t: string) => {
+                    const clean = t.startsWith('#') ? t.substring(1) : t;
+                    const converted = this.convertTagContent(clean);
+                    const final = t.startsWith('#') ? '#' + converted : converted;
+                    if (final !== t) fmModified = true;
+                };
 
-                    if (fmModified) {
-                        // We can't easily preview exact YAML changes without writing, so we add a generic notice
-                        affectedFiles.push({
-                            path: file.path,
-                            changes: [{ line: 1, before: '(Frontmatter tags)', after: '(Will be standardized)' }],
-                            included: true
-                        });
-                    }
+                const fm = cache.frontmatter;
+                if (fm.tags) {
+                    if (Array.isArray(fm.tags)) fm.tags.forEach((t: any) => typeof t === 'string' && checkTag(t));
+                    else if (typeof fm.tags === 'string') checkTag(fm.tags);
                 }
+                if (fm.tag) {
+                    if (Array.isArray(fm.tag)) fm.tag.forEach((t: any) => typeof t === 'string' && checkTag(t));
+                    else if (typeof fm.tag === 'string') checkTag(fm.tag);
+                }
+
+                if (fmModified) {
+                    // We can't easily preview exact YAML changes without writing, so we add a generic notice
+                    changes.push({ line: 1, before: '(Frontmatter tags)', after: '(Will be standardized)' });
+                }
+            }
+
+            if (changes.length > 0) {
+                affectedFiles.push({ path: file.path, changes, included: true });
             }
         }
 
@@ -628,11 +627,19 @@ export default class TagLowercasePlugin extends Plugin {
         }
     }
 
-    private isInCodeBlock(content: string, offset: number): boolean {
-        const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
-        let m: RegExpExecArray | null;
-        while ((m = codeBlockRegex.exec(content)) !== null) {
-            if (offset >= m.index && offset < m.index + m[0].length) return true;
+    private getCodeBlockRanges(content: string): { start: number; end: number }[] {
+        const regex = /```[\s\S]*?```|`[^`\n]+`/g;
+        const ranges: { start: number; end: number }[] = [];
+        let m;
+        while ((m = regex.exec(content)) !== null) {
+            ranges.push({ start: m.index, end: m.index + m[0].length });
+        }
+        return ranges;
+    }
+
+    private isInCodeBlockRange(offset: number, ranges: { start: number; end: number }[]): boolean {
+        for (const range of ranges) {
+            if (offset >= range.start && offset < range.end) return true;
         }
         return false;
     }
@@ -754,15 +761,15 @@ export default class TagLowercasePlugin extends Plugin {
 
                 let after = before;
                 await this.app.vault.process(file, (data) => {
+                    const codeBlockRanges = this.getCodeBlockRanges(data);
                     const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
-                        // Issue 1: Code blocks are not protected
-                        if (this.isInCodeBlock(data, offset)) return m;
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
                         
                         modified = true;
                         return prefix + hash + replace;
                     });
                     tagRegex.lastIndex = 0; // Reset regex state
-                    after = newData; // Issue 7: Capture after content inside process
+                    after = newData;
                     return newData;
                 });
 
@@ -804,19 +811,39 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
-        // Validation: Ensure all source tags exist in the vault
-        const allVaultTags = (this.app.metadataCache as any).getTags() || {};
-        for (const s of sourcesClean) {
-            if (!allVaultTags['#' + s]) {
-                new Notice(`Tag #${s} does not exist in your vault.`);
-                return;
+        const files = this.getFilteredFiles();
+        const changes: FileChange[] = [];
+
+        // Validation: Every single source tag must exist in the current scope
+        const tagsInScope = new Set<string>();
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (cache?.tags) {
+                cache.tags.forEach(t => tagsInScope.add(t.tag.startsWith('#') ? t.tag.substring(1) : t.tag));
+            }
+            if (cache?.frontmatter) {
+                const extract = (val: any) => {
+                    if (typeof val === 'string') val.split(',').forEach(v => tagsInScope.add(v.trim().startsWith('#') ? v.trim().substring(1) : v.trim()));
+                    else if (Array.isArray(val)) val.forEach(v => typeof v === 'string' && tagsInScope.add(v.startsWith('#') ? v.substring(1) : v));
+                };
+                if (cache.frontmatter.tags) extract(cache.frontmatter.tags);
+                if (cache.frontmatter.tag) extract(cache.frontmatter.tag);
             }
         }
 
-        new Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
+        const missingTags: string[] = [];
+        for (const s of sourcesClean) {
+            if (!tagsInScope.has(s)) {
+                missingTags.push('#' + s);
+            }
+        }
 
-        const files = this.getFilteredFiles();
-        const changes: FileChange[] = [];
+        if (missingTags.length > 0) {
+            new Notice(`Merge aborted: ${missingTags.join(', ')} not found in current scope. Check for typos or scope filters.`);
+            return;
+        }
+
+        new Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
 
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
@@ -888,12 +915,11 @@ export default class TagLowercasePlugin extends Plugin {
                     handleTagKey('tag');
                 });
 
-                // Process inline tags
                 let after = before;
                 await this.app.vault.process(file, (data) => {
+                    const codeBlockRanges = this.getCodeBlockRanges(data);
                     let newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
-                        // Issue 1: Code blocks are not protected
-                        if (this.isInCodeBlock(data, offset)) return match;
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
 
                         // Find which source tag matched and replace with target
                         for (const source of sourcesClean) {
@@ -924,7 +950,7 @@ export default class TagLowercasePlugin extends Plugin {
                     }
 
                     tagRegex.lastIndex = 0;
-                    after = newData; // Issue 7: Capture after content
+                    after = newData;
                     return newData;
                 });
 
@@ -949,9 +975,10 @@ export default class TagLowercasePlugin extends Plugin {
                 description: `Merge ${sourcesClean.map(s => '#' + s).join(', ')} → #${targetClean}`,
                 changes
             });
+            new Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
+        } else {
+            new Notice(`No files were modified. (Tags might not exist in the current scope)`);
         }
-
-        new Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
     }
 
     async deleteTags(tagsToDelete: string[]) {
@@ -1018,17 +1045,20 @@ export default class TagLowercasePlugin extends Plugin {
                     }
                 });
 
-                // Process Body
+                let after = before;
                 await this.app.vault.process(file, (data) => {
-                    const newData = data.replace(tagRegex, (match, prefix) => {
+                    const codeBlockRanges = this.getCodeBlockRanges(data);
+                    const newData = data.replace(tagRegex, (match, prefix, hash, tag, offset) => {
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+
                         modified = true;
                         return prefix; // Keep the prefix (space/start), remove the tag
                     });
+                    after = newData;
                     return newData;
                 });
 
                 if (modified) {
-                    const after = await this.app.vault.read(file);
                     changes.push({ path: file.path, before, after });
                 }
 
@@ -1079,27 +1109,23 @@ export default class TagLowercasePlugin extends Plugin {
 
         let processedCount = 0;
 
-        // Issue 10: Escape $ in replacement
-        const safeReplacement = replacement.replace(/\$/g, '$$$$');
-
         for (const file of files) {
             try {
                 const before = await this.app.vault.read(file);
                 let after = before;
-
                 await this.app.vault.process(file, (data) => {
+                    const codeBlockRanges = this.getCodeBlockRanges(data);
                     const newData = data.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
-                        // Issue 1: Code block protection
-                        if (this.isInCodeBlock(data, offset)) return fullMatch;
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return fullMatch;
 
                         const clean = tag.substring(1);
-                        const newTag = clean.replace(regex, safeReplacement);
+                        const newTag = clean.replace(regex, replacement);
                         if (newTag !== clean) {
                             return prefix + '#' + newTag;
                         }
                         return fullMatch;
                     });
-                    after = newData; // Issue 7: Capture after content
+                    after = newData;
                     return newData;
                 });
 
@@ -1393,12 +1419,11 @@ export default class TagLowercasePlugin extends Plugin {
         stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
 
         // For separators
-        // Issue 9: separatorStats.consistency calculation was wrong
         const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
         const dominantSep = Math.max(...sepArrays.map(a => a.length));
         const inconsistentSep = stats.separatorStats.both.length;
         stats.separatorStats.consistency = totalTags > 0 
-            ? Math.round((dominantSep / (totalTags)) * 100)
+            ? Math.min(100, Math.round((dominantSep / (totalTags - inconsistentSep || 1)) * 100))
             : 100;
 
         stats.specialCharStats.consistency = totalTags > 0 
@@ -1414,7 +1439,7 @@ export default class TagLowercasePlugin extends Plugin {
         const files = this.getFilteredFiles();
 
         // Exact list of prohibited characters from USER_REQUEST
-        const INVALID_CHARS = /[!@£$%^&*()=+[\]{}:;'",.<>?|\\\\]/;
+        const INVALID_CHARS = /[!@£$%^&*()=+[\]{}:;'",.<>?|\\]/;
         const PURE_NUMERIC = /^\d+$/;
 
         for (const file of files) {
@@ -1560,7 +1585,7 @@ export default class TagLowercasePlugin extends Plugin {
             } catch (e) { console.error('Format conversion failed', e); }
         }
         progressModal.close();
-        new Notice(`Converted tags to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${files.length} files.`);
+        new Notice(`Converted tags to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${count} files.`);
     }
 
     // Automated Standardization removed per user request: "THE PLUGIN SHOULD NOT FIX INVALID TAGS"
@@ -1593,7 +1618,6 @@ export default class TagLowercasePlugin extends Plugin {
         if (Object.keys(aliases).length === 0) return;
 
         let modified = false;
-        const before = await this.app.vault.read(file);
 
         await this.app.fileManager.processFrontMatter(file, (fm) => {
             const processSingleTag = (t: string): string => {
@@ -1628,17 +1652,15 @@ export default class TagLowercasePlugin extends Plugin {
             }
         });
 
-        // Also process body
-        // Issue 4: Batch all alias replacements into a single vault write
         await this.app.vault.process(file, (data) => {
+            const codeBlockRanges = this.getCodeBlockRanges(data);
             let result = data;
             for (const [alias, canonical] of Object.entries(aliases)) {
                 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, 'gu');
                 
                 result = result.replace(regex, (m, prefix, hash, captured, offset) => {
-                    // Issue 1: Code block protection
-                    if (this.isInCodeBlock(data, offset)) return m;
+                    if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
                     
                     if (canonical !== alias) modified = true;
                     return prefix + hash + canonical;
@@ -1647,16 +1669,7 @@ export default class TagLowercasePlugin extends Plugin {
             return result;
         });
 
-        if (modified) {
-            const after = await this.app.vault.read(file);
-            if (before !== after) {
-                await this.addToHistory({
-                    type: 'rename',
-                    description: `Auto-alias: ${file.name}`,
-                    changes: [{ path: file.path, before, after }]
-                });
-            }
-        }
+        // Auto-aliases are not recorded in history to avoid churn and pushing out bulk operations
     }
 
     // --- Core Processing ---
@@ -1870,6 +1883,11 @@ class PreviewModal extends Modal {
 
         new Setting(contentEl).setName('Preview Changes').setHeading();
         contentEl.createEl('p', { text: `${this.preview.affectedFiles.length} files will be modified (${this.preview.totalChanges} changes)` });
+        
+        const warning = contentEl.createEl('p', { cls: 'btm-preview-warning' });
+        warning.setText('Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.');
+        warning.style.color = 'var(--text-warning)';
+        warning.style.fontSize = 'var(--font-ui-smaller)';
 
         const listEl = contentEl.createDiv({ cls: 'btm-preview-list' });
 
