@@ -86,6 +86,8 @@ interface TagStandardizationStats {
 
     inlineFiles: { file: TFile; count: number; tags: string[] }[];
     nestedFiles: { file: TFile; count: number; tags: string[] }[];
+    quotedFrontmatterCount: number;
+    quotedFrontmatterFiles: TFile[];
 }
 
 interface InvalidTagFile {
@@ -107,6 +109,7 @@ interface TagLowercaseSettings {
     orphanThreshold: number;
     maxHistorySize: number;
     historyExpirationDays: number;
+    ignoredIssues: string[];
 }
 
 const DEFAULT_SETTINGS: TagLowercaseSettings = {
@@ -126,7 +129,8 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
     },
     orphanThreshold: 2,
     maxHistorySize: 50,
-    historyExpirationDays: 7
+    historyExpirationDays: 7,
+    ignoredIssues: []
 };
 
 // Improved regex that skips code blocks
@@ -195,16 +199,24 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     onunload() {
-        if (this.aliasDebounceTimer) {
-            clearTimeout(this.aliasDebounceTimer);
+        for (const timer of this.aliasDebounceTimers.values()) {
+            clearTimeout(timer);
         }
+        this.aliasDebounceTimers.clear();
     }
 
-    private aliasDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    private aliasDebounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
     applyAliasesDebounced(file: TFile) {
-        if (this.aliasDebounceTimer) clearTimeout(this.aliasDebounceTimer);
-        this.aliasDebounceTimer = setTimeout(() => this.applyAliases(file), 1000);
+        const existingTimer = this.aliasDebounceTimers.get(file.path);
+        if (existingTimer) clearTimeout(existingTimer);
+        
+        const timer = setTimeout(() => {
+            this.applyAliases(file);
+            this.aliasDebounceTimers.delete(file.path);
+        }, 1000);
+        
+        this.aliasDebounceTimers.set(file.path, timer);
     }
 
     async loadSettings() {
@@ -434,6 +446,108 @@ export default class TagLowercasePlugin extends Plugin {
         await this.saveSettings();
 
         new Notice(`Reverted ${revertedCount} files.`);
+    }
+
+    async standardiseProperties() {
+        const files = this.getFilteredFiles();
+        if (files.length === 0) {
+            new Notice('No markdown files found in current scope.');
+            return;
+        }
+
+        new BtmConfirmationModal(
+            this.app,
+            'Clean Frontmatter Formatting',
+            `Are you sure you want to standardise properties across ${files.length} files? This will remove unnecessary quotes and trim whitespace from all fields.`,
+            async () => {
+                const progressModal = new ProgressModal(this.app, files.length);
+                progressModal.open();
+                let successCount = 0;
+                let attemptCount = 0;
+                const errors: { path: string; message: string }[] = [];
+
+                for (const file of files) {
+                    attemptCount++;
+                    try {
+                        await this.app.fileManager.processFrontMatter(file, (fm) => {
+                            const processValue = (val: any): any => {
+                                if (typeof val === 'string') return val.trim();
+                                if (Array.isArray(val)) return val.map(v => processValue(v));
+                                
+                                // Recursive walk for nested objects, excluding Dates
+                                if (val !== null && typeof val === 'object' && !(val instanceof Date)) {
+                                    for (const k in val) val[k] = processValue(val[k]);
+                                }
+                                return val;
+                            };
+
+                            for (const key in fm) {
+                                fm[key] = processValue(fm[key]);
+                            }
+                        });
+                        successCount++;
+                    } catch (e) {
+                        const errorMsg = e instanceof Error ? e.message : String(e);
+                        console.error(`Standardise failed for ${file.path}:`, errorMsg);
+                        errors.push({ path: file.path, message: errorMsg });
+                    }
+
+                    // Throttle: Yield to event loop every 50 files based on attempts
+                    if (attemptCount % 50 === 0) {
+                        progressModal.update(attemptCount);
+                        await new Promise(resolve => setTimeout(resolve, 5)); 
+                    } else {
+                        progressModal.update(attemptCount);
+                    }
+                }
+
+                progressModal.close();
+                new Notice(`Finished: ${successCount} files cleaned. ${errors.length > 0 ? `(${errors.length} skipped due to errors)` : ''}`);
+                
+                if (errors.length > 0) {
+                    new BtmErrorReportModal(this.app, this, 'Standardise Errors', errors).open();
+                }
+            }
+        ).open();
+    }
+
+    async fixInvalidMappingError(file: TFile): Promise<void> {
+        // 1. Read raw text from disk (bypasses parser)
+        const content = await this.app.vault.read(file);
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+
+        if (!fmMatch) return;
+
+        const originalFm = fmMatch[1];
+        const lines = originalFm.split('\n');
+        let isModified = false;
+
+        const fixedLines = lines.map(line => {
+            // Regex targets lines like: Key: Text with a: inside
+            // Group 1: The Key (e.g., "Resumen")
+            // Group 2: The invalid unquoted value (contains : )
+            // Negative lookahead ensures we do not touch already quoted or complex lines.
+            const match = line.match(/^([\w\s_-]+):\s*(?!["'\[{>|])(.*:\s.*)$/);
+
+            if (match) {
+                const key = match[1];
+                let value = match[2];
+
+                // Escape any existing double quotes inside the string
+                value = value.replace(/"/g, '\\"');
+
+                isModified = true;
+                return `${key}: "${value}"`;
+            }
+
+            return line;
+        });
+
+        if (isModified) {
+            const newFm = fixedLines.join('\n');
+            const newContent = content.replace(originalFm, newFm);
+            await this.app.vault.modify(file, newContent);
+        }
     }
 
     // --- Preview System ---
@@ -1246,7 +1360,9 @@ export default class TagLowercasePlugin extends Plugin {
             locationStats: { frontmatter: [], body: [] },
             formatStats: { yamlList: [], inlineArray: [], mixed: [] },
             inlineFiles: [],
-            nestedFiles: []
+            nestedFiles: [],
+            quotedFrontmatterCount: 0,
+            quotedFrontmatterFiles: []
         };
 
         // Format Analysis (Check all files)
@@ -1255,42 +1371,56 @@ export default class TagLowercasePlugin extends Plugin {
             const cache = this.app.metadataCache.getFileCache(file);
             if (!cache?.frontmatter) continue;
             
-            const hasTags = cache.frontmatter.tags !== undefined || cache.frontmatter.tag !== undefined;
-            if (!hasTags) continue;
-
             try {
-                // To optimize, we only read the beginning of the file (YAML block)
-                const content = await this.app.vault.read(file);
-                const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-                if (fmMatch) {
-                    const fmText = fmMatch[1];
-                    const lines = fmText.split('\n');
-                    for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        const match = line.match(/^(tags?):(.*)$/i);
-                        if (match) {
-                            const value = match[2].trim();
+                // High-speed cached read (avoids disk I/O bottleneck)
+                const content = await this.app.vault.cachedRead(file);
+                
+                if (content.startsWith('---')) {
+                    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+                    if (fmMatch) {
+                        const fmText = fmMatch[1];
+                        const lines = fmText.split('\n');
+                        
+                        // Refined Heuristic: Detect quoted values while ignoring mandatory structural quotes
+                        const hasQuotedProps = lines.some(line => {
+                            // (?![\[{@#*&!%>|]) ensures the quote is NOT immediately followed by a YAML special character
+                            
+                            // Match root-level properties & inline arrays: key: "val" OR key: ["val"]
+                            if (/^[^\s:]+:\s*\[?\s*["'](?![\[{@#*&!%>|])/.test(line)) return true;
+                            // Match indented list items: - "val"
+                            if (/^\s+-\s*["'](?![\[{@#*&!%>|])/.test(line)) return true;
+                            return false;
+                        });
 
-                            if (value.startsWith('[')) {
-                                stats.formatStats.inlineArray.push(file);
-                            } else if (!value || value === '') {
-                                // Value is empty, check next lines for list items
-                                for (let j = i + 1; j < lines.length; j++) {
-                                    const nextLine = lines[j].trim();
-                                    if (!nextLine) continue; 
+                        if (hasQuotedProps) {
+                            stats.quotedFrontmatterCount++;
+                            stats.quotedFrontmatterFiles.push(file);
+                        }
 
-                                    if (nextLine.startsWith('-')) {
-                                        stats.formatStats.yamlList.push(file);
+                        const hasTags = cache.frontmatter.tags !== undefined || cache.frontmatter.tag !== undefined;
+                        if (hasTags) {
+                            for (let i = 0; i < lines.length; i++) {
+                                const line = lines[i];
+                                const match = line.match(/^(tags?):(.*)$/i);
+                                if (match) {
+                                    const value = match[2].trim();
+                                    if (value.startsWith('[')) {
+                                        stats.formatStats.inlineArray.push(file);
+                                    } else if (!value || value === '') {
+                                        for (let j = i + 1; j < lines.length; j++) {
+                                            const nextLine = lines[j].trim();
+                                            if (!nextLine) continue; 
+                                            if (nextLine.startsWith('-')) {
+                                                stats.formatStats.yamlList.push(file);
+                                            }
+                                            break;
+                                        }
+                                    } else {
+                                        stats.formatStats.mixed.push(file);
                                     }
                                     break;
                                 }
-                            } else {
-                                // If it's just "tags: tag1, tag2" (no brackets, no list)
-                                // Obsidian treats this as a single string or array depending on commas
-                                // We'll count this as "mixed" or just "inline" without brackets
-                                stats.formatStats.mixed.push(file);
                             }
-                            break;
                         }
                     }
                 }
@@ -1452,6 +1582,7 @@ export default class TagLowercasePlugin extends Plugin {
                 const trimmed = t.trim();
                 if (trimmed.length === 0) return null;
 
+                if (t !== trimmed) return { description: `${context} "${t}" has extra spaces`, tag: t };
                 if (trimmed.includes(' ')) return { description: `${context} "${t}" contains spaces`, tag: t };
                 if (PURE_NUMERIC.test(trimmed)) return { description: `${context} "${t}" consists solely of numbers`, tag: t };
                 if (INVALID_CHARS.test(trimmed)) return { description: `${context} "${t}" contains prohibited special characters`, tag: t };
@@ -1502,12 +1633,21 @@ export default class TagLowercasePlugin extends Plugin {
 
             if (issues.length > 0) {
                 // Deduplicate by description
-                const uniqueIssues = Array.from(new Map(issues.map(i => [i.description, i])).values());
-                invalidFiles.push({
-                    path: file.path,
-                    file: file,
-                    issues: uniqueIssues
+                let uniqueIssues = Array.from(new Map(issues.map(i => [i.description, i])).values());
+                
+                // Filter out ignored issues
+                uniqueIssues = uniqueIssues.filter(issue => {
+                    const id = `${file.path}|${issue.description}`;
+                    return !this.settings.ignoredIssues.includes(id);
                 });
+
+                if (uniqueIssues.length > 0) {
+                    invalidFiles.push({
+                        path: file.path,
+                        file: file,
+                        issues: uniqueIssues
+                    });
+                }
             }
         }
 
@@ -1563,11 +1703,16 @@ export default class TagLowercasePlugin extends Plugin {
 
                     // Construct new lines
                     const newLines: string[] = [];
+                    const safeTag = (t: string) => {
+                        return t.match(/[:#[\]{}|>]/) ? `"${t.replace(/"/g, '\\"')}"` : t;
+                    };
+
                     if (format === 'inline') {
-                        newLines.push(`${keyName}: [${tags.join(', ')}]`);
+                        const safeTagsStr = tags.map((t: string) => safeTag(t)).join(', ');
+                        newLines.push(`${keyName}: [${safeTagsStr}]`);
                     } else {
                         newLines.push(`${keyName}:`);
-                        tags.forEach((t: string) => newLines.push(`  - ${t}`));
+                        tags.forEach((t: string) => newLines.push(`  - ${safeTag(t)}`));
                     }
 
                     // Splice
@@ -1657,7 +1802,7 @@ export default class TagLowercasePlugin extends Plugin {
             let result = data;
             for (const [alias, canonical] of Object.entries(aliases)) {
                 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$)`, 'gu');
+                const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$|[^\\p{L}\\p{N}_-])`, 'gu');
                 
                 result = result.replace(regex, (m, prefix, hash, captured, offset) => {
                     if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
@@ -2275,9 +2420,6 @@ class InvalidTagsModal extends Modal {
                 this.app.workspace.openLinkText(item.path, '', false);
             };
 
-            // Automated Fix Button removed as per user request
-
-
             const issuesEl = itemEl.createDiv({ cls: 'btm-invalid-issues' });
             for (const issue of item.issues) {
                 const issueEl = issuesEl.createDiv({ cls: 'btm-invalid-issue-manual' });
@@ -2286,28 +2428,71 @@ class InvalidTagsModal extends Modal {
                 setIcon(infoEl.createSpan({ cls: 'btm-icon' }), 'alert-circle');
                 infoEl.createSpan({ text: ' ' + issue.description });
 
-                if (issue.tag) {
-                    const fixRow = issueEl.createDiv({ cls: 'btm-fix-manual-row' });
-                    const input = new TextComponent(fixRow).setPlaceholder('Correct tag name...');
-                    input.setValue(issue.tag.replace(/^#/, '').trim());
-                    
-                    const applyBtn = fixRow.createEl('button', { text: 'Apply Fix', cls: 'btm-small-btn mod-cta' });
-                    applyBtn.onclick = async () => {
-                        const newTag = input.getValue().trim();
-                        if (newTag) {
-                            await this.plugin.renameTag(issue.tag!, newTag);
+                const actionRow = issueEl.createDiv({ cls: 'btm-fix-manual-row' });
+                
+                const desc = issue.description.toLowerCase();
+                const isDuplicate = desc.includes('duplicate');
+                const isExtraSpace = desc.includes('extra space');
+                
+                if (isDuplicate || isExtraSpace) {
+                    const removeBtn = actionRow.createEl('button', { text: 'Remove', cls: 'btm-small-btn mod-warning' });
+                    removeBtn.onclick = async () => {
+                        const file = this.app.vault.getAbstractFileByPath(item.path);
+                        if (file instanceof TFile && issue.tag) {
+                            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                                const removeOne = (key: string) => {
+                                    if (fm[key]) {
+                                        if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
+                                            delete fm[key];
+                                        } else if (Array.isArray(fm[key])) {
+                                            if (isDuplicate) {
+                                                const idx = fm[key].indexOf(issue.tag);
+                                                if (idx > -1) fm[key].splice(idx, 1);
+                                            } else if (isExtraSpace) {
+                                                fm[key] = fm[key].map((t: any) => (String(t) === issue.tag ? String(t).trim() : t));
+                                            }
+                                        }
+                                    }
+                                };
+                                removeOne('tags');
+                                removeOne('tag');
+                            });
                             issueEl.remove();
-                            if (issuesEl.children.length === 0) itemEl.remove();
-                            if (listEl.children.length === 0) this.close();
+                            this.checkEmpty(itemEl, issuesEl, listEl);
+                            new Notice('Applied automated fix.');
                         }
                     };
+                } else {
+                    const goBtn = actionRow.createEl('button', { text: 'Go to note', cls: 'btm-small-btn' });
+                    goBtn.onclick = () => {
+                        this.close();
+                        this.app.workspace.openLinkText(item.path, '', false);
+                    };
                 }
+
+                const ignoreBtn = actionRow.createEl('button', { text: 'Ignore', cls: 'btm-small-btn' });
+                ignoreBtn.onclick = async () => {
+                    const id = `${item.path}|${issue.description}`;
+                    this.plugin.settings.ignoredIssues.push(id);
+                    await this.plugin.saveSettings();
+                    issueEl.remove();
+                    this.checkEmpty(itemEl, issuesEl, listEl);
+                    new Notice('Issue ignored.');
+                };
             }
         }
 
         const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
         const closeBtn = btnRow.createEl('button', { text: 'Close' });
         closeBtn.onclick = () => this.close();
+    }
+
+    private checkEmpty(itemEl: HTMLElement, issuesEl: HTMLElement, listEl: HTMLElement) {
+        if (issuesEl.children.length === 0) itemEl.remove();
+        if (listEl.children.length === 0) {
+            this.close();
+            new Notice('All issues resolved.');
+        }
     }
 
     onClose() {
@@ -2561,6 +2746,94 @@ class SimpleFileListModal extends Modal {
                     this.close();
                     this.app.workspace.openLinkText(file.path, '', false);
                 };
+        }
+
+        const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
+        btnRow.createEl('button', { text: 'Close' }).onclick = () => this.close();
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
+class BtmErrorReportModal extends Modal {
+    private plugin: TagLowercasePlugin;
+    private errors: { path: string; message: string }[];
+    private title: string;
+
+    constructor(app: App, plugin: TagLowercasePlugin, title: string, errors: { path: string; message: string }[]) {
+        super(app);
+        this.plugin = plugin;
+        this.title = title;
+        this.errors = errors;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-file-list-modal');
+        
+        // Ensure modal is large enough and styled
+        this.modalEl.style.width = '80vw';
+        this.modalEl.style.maxWidth = '800px';
+
+        new Setting(contentEl)
+            .setName(this.title)
+            .setDesc(`${this.errors.length} issues found. Click a path to open the note.`)
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-file-list' });
+        listEl.style.maxHeight = '60vh';
+        listEl.style.overflowY = 'auto';
+        listEl.style.marginTop = '20px';
+
+        if (this.errors.length === 0) {
+            listEl.createEl('p', { text: 'No errors to display.', cls: 'btm-loading' });
+        } else {
+            for (const err of this.errors) {
+                const itemEl = listEl.createDiv({ cls: 'btm-file-item' });
+                itemEl.style.borderLeft = '4px solid var(--text-error)';
+                itemEl.style.padding = '10px';
+                itemEl.style.marginBottom = '10px';
+                itemEl.style.background = 'var(--background-secondary-alt)';
+                itemEl.style.borderRadius = '4px';
+
+                const pathLink = itemEl.createEl('a', { text: err.path, cls: 'btm-file-link' });
+                pathLink.style.display = 'block';
+                pathLink.style.fontWeight = 'bold';
+                pathLink.style.marginBottom = '5px';
+                pathLink.onclick = () => {
+                    this.close();
+                    this.app.workspace.openLinkText(err.path, '', false);
+                };
+
+                itemEl.createDiv({ text: `Error: ${err.message}` }).style.color = 'var(--text-error)';
+                itemEl.style.fontSize = 'var(--font-ui-small)';
+
+                // Add Fix button if it's a mapping error
+                const msg = err.message.toLowerCase();
+                if (msg.includes('mapping') || msg.includes('colon') || msg.includes('syntax')) {
+                    const actionRow = itemEl.createDiv({ cls: 'btm-button-row' });
+                    actionRow.style.justifyContent = 'flex-start';
+                    actionRow.style.marginTop = '10px';
+
+                    const fixBtn = actionRow.createEl('button', { text: 'Fix Syntax', cls: 'mod-cta' });
+                    fixBtn.style.padding = '2px 10px';
+                    fixBtn.style.fontSize = '11px';
+                    
+                    fixBtn.onclick = async () => {
+                        const file = this.app.vault.getAbstractFileByPath(err.path);
+                        if (file instanceof TFile) {
+                            await this.plugin.fixInvalidMappingError(file);
+                            itemEl.style.opacity = '0.5';
+                            fixBtn.disabled = true;
+                            fixBtn.setText('Fixed');
+                            new Notice(`Fixed YAML syntax in: ${file.basename}`);
+                        }
+                    };
+                }
+            }
         }
 
         const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
@@ -3201,6 +3474,15 @@ class TagManagerModal extends Modal {
 
 
 
+        // --- Metadata Utilities ---
+        const utilBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        utilBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Metadata Utilities' });
+        const utilRow = utilBox.createDiv({ cls: 'btm-action-row' });
+        
+        const btnStandardize = this.createIconButton(utilRow, 'file-check', 'Standardise Properties');
+        setTooltip(btnStandardize, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
+        btnStandardize.onclick = () => this.plugin.standardiseProperties();
+
         // --- Action Row (Bottom) ---
         const actionBox = contentEl.createDiv({ cls: 'btm-section-box' });
         actionBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Other actions' });
@@ -3329,11 +3611,24 @@ class TagManagerModal extends Modal {
 
         // Special characters
         const specialBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
-        specialBox.createDiv({ text: 'Clean Tags', cls: 'btm-metric-label' });
+        specialBox.createDiv({ text: 'Clean tags and front matter', cls: 'btm-metric-label' });
         this.createProgressBar(specialBox, stats.specialCharStats.consistency);
         const specialDetails = specialBox.createDiv({ cls: 'btm-metric-details' });
-        createStatLink(specialDetails, stats.specialCharStats.clean.length, 'clean', stats.specialCharStats.clean);
+        createStatLink(specialDetails, stats.specialCharStats.clean.length, 'clean tags', stats.specialCharStats.clean);
         createStatLink(specialDetails, stats.specialCharStats.withSpecial.length, 'with special chars', stats.specialCharStats.withSpecial);
+        
+        if (stats.quotedFrontmatterCount > 0) {
+            const fmLink = specialDetails.createEl('a', { 
+                text: `${stats.quotedFrontmatterCount} notes with quoted properties`, 
+                cls: 'btm-stat-link btm-warning-link' 
+            });
+            fmLink.style.display = 'block';
+            fmLink.style.marginTop = '4px';
+            fmLink.onclick = () => {
+                this.close();
+                new SimpleFileListModal(this.app, 'Notes with Quoted Properties', stats.quotedFrontmatterFiles).open();
+            };
+        }
 
         // Tag Format Style
         const formatBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
