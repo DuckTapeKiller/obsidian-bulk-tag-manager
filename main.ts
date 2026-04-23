@@ -83,11 +83,15 @@ interface TagStandardizationStats {
         inlineArray: TFile[];
         mixed: TFile[];
     };
-
+    wikiLinkStats: {
+        yamlList: TFile[];
+        inlineArray: TFile[];
+    };
     inlineFiles: { file: TFile; count: number; tags: string[] }[];
     nestedFiles: { file: TFile; count: number; tags: string[] }[];
     quotedFrontmatterCount: number;
     quotedFrontmatterFiles: TFile[];
+    caseDuplicates: { canonical: string, variants: string[] }[];
 }
 
 interface InvalidTagFile {
@@ -103,6 +107,7 @@ interface TagLowercaseSettings {
     flattenDiacritics: boolean;
     applyToNestedTags: boolean;
     tagFormat: 'inline' | 'list';
+    wikiLinkFormat: 'inline' | 'list';
     aliases: Record<string, string>;
     operationHistory: OperationRecord[];
     scopeFilter: ScopeFilter;
@@ -110,6 +115,7 @@ interface TagLowercaseSettings {
     maxHistorySize: number;
     historyExpirationDays: number;
     ignoredIssues: string[];
+    protectedTags: string[];
 }
 
 const DEFAULT_SETTINGS: TagLowercaseSettings = {
@@ -119,6 +125,7 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
     flattenDiacritics: false,
     applyToNestedTags: true,
     tagFormat: 'inline',
+    wikiLinkFormat: 'inline',
     aliases: {},
     operationHistory: [],
     scopeFilter: {
@@ -130,11 +137,64 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
     orphanThreshold: 2,
     maxHistorySize: 50,
     historyExpirationDays: 7,
-    ignoredIssues: []
+    ignoredIssues: [],
+    protectedTags: []
 };
 
 // Improved regex that skips code blocks
 const TAG_REGEX = /(^|\s)(#[\p{L}\p{N}_\-\/]+)/gu;
+
+class InlineTagSuggest {
+    private suggestEl: HTMLElement;
+    private isOpen = false;
+    
+    constructor(private app: App, private inputEl: HTMLInputElement, private containerEl: HTMLElement, private onSelect: (tag: string) => void) {
+        this.suggestEl = containerEl.createDiv({ cls: 'btm-inline-suggestions' });
+        this.suggestEl.hide();
+        
+        inputEl.addEventListener('input', () => this.updateSuggestions());
+        inputEl.addEventListener('blur', () => {
+            // Delay to allow clicking on an item
+            setTimeout(() => this.hide(), 200);
+        });
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.hide();
+        });
+    }
+
+    private hide() {
+        this.suggestEl.hide();
+        this.isOpen = false;
+    }
+
+    private show() {
+        this.suggestEl.show();
+        this.isOpen = true;
+    }
+
+    updateSuggestions() {
+        const query = this.inputEl.value.toLowerCase().replace(/^#/, '');
+        if (!query) { this.hide(); return; }
+
+        const allTags = Object.keys((this.app.metadataCache as any).getTags()).map(t => t.replace(/^#/, ''));
+        const matches = allTags.filter(t => t.toLowerCase().includes(query)).slice(0, 8);
+
+        if (matches.length > 0) {
+            this.suggestEl.empty();
+            matches.forEach(m => {
+                const item = this.suggestEl.createDiv({ text: '#' + m, cls: 'btm-suggest-item' });
+                item.onclick = () => {
+                    this.inputEl.value = m;
+                    this.onSelect(m);
+                    this.hide();
+                };
+            });
+            this.show();
+        } else {
+            this.hide();
+        }
+    }
+}
 
 export default class TagLowercasePlugin extends Plugin {
     settings: TagLowercaseSettings;
@@ -191,7 +251,8 @@ export default class TagLowercasePlugin extends Plugin {
         // Register event for alias auto-correction
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
-                if (file instanceof TFile && Object.keys(this.settings.aliases).length > 0) {
+                if (this.isBulkOperationInProgress) return;
+                if (file instanceof TFile && file.extension === 'md' && Object.keys(this.settings.aliases).length > 0) {
                     this.applyAliasesDebounced(file);
                 }
             })
@@ -205,7 +266,21 @@ export default class TagLowercasePlugin extends Plugin {
         this.aliasDebounceTimers.clear();
     }
 
-    private aliasDebounceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+    private aliasDebounceTimers: Map<string, NodeJS.Timeout> = new Map();
+    private isBulkOperationInProgress = false;
+
+    isTagProtected(tag: string): boolean {
+        const cleanTag = tag.replace(/^#/, '');
+        return this.settings.protectedTags.some(p => {
+            const cleanP = p.replace(/^#/, '');
+            if (cleanP === cleanTag) return true;
+            if (cleanP.endsWith('*')) {
+                const prefix = cleanP.slice(0, -1);
+                return cleanTag.startsWith(prefix);
+            }
+            return false;
+        });
+    }
 
     applyAliasesDebounced(file: TFile) {
         const existingTimer = this.aliasDebounceTimers.get(file.path);
@@ -407,6 +482,7 @@ export default class TagLowercasePlugin extends Plugin {
             }
         }
 
+        this.isBulkOperationInProgress = true;
         for (let i = 0; i < fileChanges.length; i++) {
             const change = fileChanges[i];
             const file = this.app.vault.getAbstractFileByPath(change.path);
@@ -436,6 +512,7 @@ export default class TagLowercasePlugin extends Plugin {
                 }
             }
         }
+        this.isBulkOperationInProgress = false;
 
         // Cleanup
         if (lastOp.useExternalStorage) {
@@ -460,6 +537,7 @@ export default class TagLowercasePlugin extends Plugin {
             'Clean Frontmatter Formatting',
             `Are you sure you want to standardise properties across ${files.length} files? This will remove unnecessary quotes and trim whitespace from all fields.`,
             async () => {
+                this.isBulkOperationInProgress = true;
                 const progressModal = new ProgressModal(this.app, files.length);
                 progressModal.open();
                 let successCount = 0;
@@ -481,9 +559,9 @@ export default class TagLowercasePlugin extends Plugin {
                                 return val;
                             };
 
-                            for (const key in fm) {
+                            Object.keys(fm).forEach(key => {
                                 fm[key] = processValue(fm[key]);
-                            }
+                            });
                         });
                         successCount++;
                     } catch (e) {
@@ -500,6 +578,7 @@ export default class TagLowercasePlugin extends Plugin {
                         progressModal.update(attemptCount);
                     }
                 }
+                this.isBulkOperationInProgress = false;
 
                 progressModal.close();
                 new Notice(`Finished: ${successCount} files cleaned. ${errors.length > 0 ? `(${errors.length} skipped due to errors)` : ''}`);
@@ -545,7 +624,10 @@ export default class TagLowercasePlugin extends Plugin {
 
         if (isModified) {
             const newFm = fixedLines.join('\n');
-            const newContent = content.replace(originalFm, newFm);
+            const fmStartIdx = content.indexOf('---\n') + 4;
+        const fmEndIdx = content.indexOf('\n---', fmStartIdx);
+        if (fmStartIdx === 3 || fmEndIdx === -1) return; // safety check
+        const newContent = content.substring(0, fmStartIdx) + newFm + content.substring(fmEndIdx);
             await this.app.vault.modify(file, newContent);
         }
     }
@@ -557,7 +639,10 @@ export default class TagLowercasePlugin extends Plugin {
         const affectedFiles: PreviewFile[] = [];
         for (const file of files) {
             const content = await this.app.vault.read(file);
-            const newContent = this.transformContent(content);
+            const codeBlockRanges = this.getCodeBlockRanges(content);
+            const fmMatch = content.match(/^---\n[\s\S]*?\n---/);
+            const skipStart = fmMatch ? fmMatch[0].length : 0;
+            const newContent = this.transformContent(content, skipStart, codeBlockRanges);
             const changes: { line: number; before: string; after: string }[] = [];
 
             if (content !== newContent) {
@@ -634,6 +719,7 @@ export default class TagLowercasePlugin extends Plugin {
         const changes: FileChange[] = [];
         let processedCount = 0;
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
 
@@ -659,6 +745,7 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
 
         progressModal.close();
 
@@ -680,6 +767,7 @@ export default class TagLowercasePlugin extends Plugin {
         const changes: FileChange[] = [];
         let processedCount = 0;
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
 
@@ -700,6 +788,7 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
 
         progressModal.close();
 
@@ -770,6 +859,11 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
+        if (this.isTagProtected(search)) {
+            new Notice(`⚠️ #${search} is protected and cannot be modified.`);
+            return;
+        }
+
         new Notice(`Scanning for #${search}...`);
 
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -821,6 +915,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         new Notice(`Found ${matchingFiles.length} files with #${search}. Renaming...`);
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, matchingFiles.length);
         progressModal.open();
 
@@ -837,6 +932,7 @@ export default class TagLowercasePlugin extends Plugin {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
+                        if (this.isTagProtected(raw)) return t;
                         if (raw === search) {
                             modified = true;
                             return hasHash ? '#' + replace : replace;
@@ -878,6 +974,7 @@ export default class TagLowercasePlugin extends Plugin {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
                     const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
                         if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
+                        if (this.isTagProtected(captured)) return m;
                         
                         modified = true;
                         return prefix + hash + replace;
@@ -899,6 +996,7 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
 
         progressModal.close();
 
@@ -919,6 +1017,12 @@ export default class TagLowercasePlugin extends Plugin {
         const sourcesClean = sources
             .map(s => s.startsWith('#') ? s.substring(1) : s)
             .filter(s => s && s !== targetClean);
+
+        const protectedSources = sourcesClean.filter(s => this.isTagProtected(s));
+        if (protectedSources.length > 0) {
+            new Notice(`⚠️ Protected tags cannot be merged/moved: ${protectedSources.map(s => '#' + s).join(', ')}`);
+            return;
+        }
 
         if (sourcesClean.length === 0) {
             new Notice('No valid source tags to merge.');
@@ -959,6 +1063,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         new Notice(`Merging ${sourcesClean.length} tags into #${targetClean}...`);
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
 
@@ -980,6 +1085,7 @@ export default class TagLowercasePlugin extends Plugin {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
+                        if (this.isTagProtected(raw)) return t;
 
                         for (const source of sourcesClean) {
                             if (raw === source) {
@@ -1034,6 +1140,7 @@ export default class TagLowercasePlugin extends Plugin {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
                     let newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
                         if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+                        if (this.isTagProtected(capturedTag)) return match;
 
                         // Find which source tag matched and replace with target
                         for (const source of sourcesClean) {
@@ -1080,6 +1187,7 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
 
         progressModal.close();
 
@@ -1095,28 +1203,36 @@ export default class TagLowercasePlugin extends Plugin {
         }
     }
 
-    async deleteTags(tagsToDelete: string[]) {
+    async deleteTags(tagsToDelete: string[], silent = false): Promise<number> {
         const cleanTags = tagsToDelete
             .map(t => t.startsWith('#') ? t.substring(1) : t)
             .filter(t => t.length > 0);
 
-        if (cleanTags.length === 0) {
-            new Notice('No valid tags to delete.');
-            return;
+        const deletableTags = cleanTags.filter(t => !this.isTagProtected(t));
+        const protectedTags = cleanTags.filter(t => this.isTagProtected(t));
+
+        if (protectedTags.length > 0) {
+            new Notice(`⚠️ Skipping protected tags: ${protectedTags.map(t => '#' + t).join(', ')}`);
+        }
+
+        if (deletableTags.length === 0) {
+            if (protectedTags.length === 0) new Notice('No valid tags to delete.');
+            return 0;
         }
 
         const files = this.getFilteredFiles();
         const changes: FileChange[] = [];
 
-        new Notice(`Deleting ${cleanTags.length} tags...`);
+        new Notice(`Deleting ${deletableTags.length} tags...`);
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
         let processedCount = 0;
 
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         // Match exact tag OR tag/child
-        const patternParts = cleanTags.map(t => `(?:${escapeRegExp(t)}(?:\\/[\\p{L}\\p{N}_\\-]+)*)`);
+        const patternParts = deletableTags.map(t => `(?:${escapeRegExp(t)}(?:\\/[\\p{L}\\p{N}_\\-]+)*)`);
         const combinedPattern = patternParts.join('|');
         const tagRegex = new RegExp(`(^|\\s)(#)(${combinedPattern})(?=[\\s]|$|[^\\p{L}\\p{N}_-])`, 'gu');
 
@@ -1129,8 +1245,9 @@ export default class TagLowercasePlugin extends Plugin {
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
                     const shouldDelete = (t: string) => {
                         const raw = t.startsWith('#') ? t.substring(1) : t;
+                        if (this.isTagProtected(raw)) return false;
                         // Check if raw is one of the tags to delete or a child of them
-                        return cleanTags.some(del => raw === del || raw.startsWith(del + '/'));
+                        return deletableTags.some(del => raw === del || raw.startsWith(del + '/'));
                     };
 
                     if (fm.tags) {
@@ -1185,19 +1302,21 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
 
         progressModal.close();
 
         if (changes.length > 0) {
             await this.addToHistory({
                 type: 'delete',
-                description: `Deleted tags: ${cleanTags.join(', ')}`,
+                description: `Deleted tags: ${deletableTags.join(', ')}`,
                 changes
             });
-            new Notice(`Deleted tags from ${changes.length} files.`);
+            if (!silent) new Notice(`Deleted tags from ${changes.length} files.`);
         } else {
-            new Notice('No tags deleted.');
+            if (!silent) new Notice('No tags deleted.');
         }
+        return changes.length;
     }
 
     async batchRename(pattern: string, replacement: string) {
@@ -1218,6 +1337,7 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
 
@@ -1231,6 +1351,7 @@ export default class TagLowercasePlugin extends Plugin {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
                     const newData = data.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
                         if (this.isInCodeBlockRange(offset, codeBlockRanges)) return fullMatch;
+                        if (this.isTagProtected(tag)) return fullMatch;
 
                         const clean = tag.substring(1);
                         const newTag = clean.replace(regex, replacement);
@@ -1255,6 +1376,7 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
 
         progressModal.close();
 
@@ -1299,22 +1421,16 @@ export default class TagLowercasePlugin extends Plugin {
             }
         }
 
-        // Issue 11: Accumulate counts from children to parents
         const accumulate = (nodes: TagNode[]): number => {
             let total = 0;
             for (const node of nodes) {
-                const childrenCount = accumulate(node.children);
-                node.count += childrenCount;
+                node.count += accumulate(node.children);
                 total += node.count;
             }
             return total;
         };
         
-        // We don't want the total sum of all roots, just want each root to have its tree sum
-        root.forEach(node => {
-            const childrenCount = accumulate(node.children);
-            node.count += childrenCount;
-        });
+        accumulate(root);
 
         return root;
     }
@@ -1359,10 +1475,12 @@ export default class TagLowercasePlugin extends Plugin {
             lengthStats: { short: [], medium: [], long: [], avgLength: 0 },
             locationStats: { frontmatter: [], body: [] },
             formatStats: { yamlList: [], inlineArray: [], mixed: [] },
+            wikiLinkStats: { yamlList: [], inlineArray: [] },
             inlineFiles: [],
             nestedFiles: [],
             quotedFrontmatterCount: 0,
-            quotedFrontmatterFiles: []
+            quotedFrontmatterFiles: [],
+            caseDuplicates: []
         };
 
         // Format Analysis (Check all files)
@@ -1422,6 +1540,55 @@ export default class TagLowercasePlugin extends Plugin {
                                 }
                             }
                         }
+
+                        // Wiki Link Analysis (Refined logic)
+                        const fm = cache.frontmatter;
+                        let fileHasWikiList = false;
+                        let fileHasWikiInline = false;
+
+                        for (const key in fm) {
+                            if (key.toLowerCase() === 'tags' || key.toLowerCase() === 'tag') continue;
+
+                            let val = fm[key];
+                            if (val === null || val === undefined) continue;
+
+                            const valArray = Array.isArray(val) ? val : [val];
+                            
+                            // 1. Is this a wiki link property?
+                            const isWikiLinkProperty = valArray.some(v => {
+                                if (typeof v === 'string') return v.trim().startsWith('[[') && v.trim().endsWith(']]');
+                                if (Array.isArray(v) && v.length === 1 && typeof v[0] === 'string') return true; 
+                                return false;
+                            });
+
+                            if (isWikiLinkProperty) {
+                                // 2. Peek at the raw lines to see HOW it is formatted
+                                const keyEscaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                                const keyRegex = new RegExp(`^${keyEscaped}:`);
+                                const keyLineIndex = lines.findIndex(l => keyRegex.test(l));
+                                
+                                if (keyLineIndex !== -1) {
+                                    const valueStr = lines[keyLineIndex].split(':')[1]?.trim();
+                                    
+                                    // If the line has no value next to the key, it must be a multiline list below it
+                                    if (!valueStr || valueStr === '') {
+                                        fileHasWikiList = true;
+                                    } 
+                                    // If it explicitly starts with an array bracket (and isn't just an unquoted [[link]])
+                                    else if (valueStr.startsWith('[') && !valueStr.startsWith('[[')) {
+                                        fileHasWikiInline = true;
+                                    }
+                                    // If it's a single item like "[[Link]]" or [[Link]], treat it as inline for stats purposes
+                                    else {
+                                        fileHasWikiInline = true; 
+                                    }
+                                }
+                            }
+                        }
+
+                        // Categorize the file based on what we found
+                        if (fileHasWikiList) stats.wikiLinkStats.yamlList.push(file);
+                        if (fileHasWikiInline) stats.wikiLinkStats.inlineArray.push(file);
                     }
                 }
             } catch (e) { /* Ignore read errors */ }
@@ -1560,6 +1727,33 @@ export default class TagLowercasePlugin extends Plugin {
             ? Math.round((stats.specialCharStats.clean.length / totalTags) * 100)
             : 100;
 
+        // --- 3. Duplicate Detection across case variants ---
+        const globalTags = (this.app.metadataCache as any).getTags();
+        const caseGroups = new Map<string, string[]>();
+
+        tags.forEach(tag => {
+            const normalized = tag.replace(/^#/, '').toLowerCase();
+            if (!caseGroups.has(normalized)) caseGroups.set(normalized, []);
+            caseGroups.get(normalized)?.push(tag);
+        });
+
+        const duplicates: { canonical: string, variants: string[] }[] = [];
+        caseGroups.forEach((variants) => {
+            if (variants.length > 1) {
+                const canonical = variants.reduce((a, b) => {
+                    // NORMALIZED LOOKUP: Always use # prefix for count check
+                    const countA = globalTags['#' + a.replace(/^#/, '')] || 0;
+                    const countB = globalTags['#' + b.replace(/^#/, '')] || 0;
+                    
+                    if (countA !== countB) return countA > countB ? a : b;
+                    // Tie-breaker: Case-sensitive comparison for stability (e.g., "React" beats "react")
+                    return a < b ? a : b;
+                });
+                duplicates.push({ canonical, variants });
+            }
+        });
+        stats.caseDuplicates = duplicates;
+
         return stats;
     }
 
@@ -1654,9 +1848,10 @@ export default class TagLowercasePlugin extends Plugin {
         return invalidFiles;
     }
 
-    async convertTagFormat(files: TFile[], format: 'inline' | 'list') {
-        const progressModal = new ProgressModal(this.app, files.length);
-        progressModal.open();
+    async convertTagFormat(files: TFile[], format: 'inline' | 'list', silent = false) {
+        this.isBulkOperationInProgress = true;
+        const progressModal = !silent ? new ProgressModal(this.app, files.length) : null;
+        if (progressModal) progressModal.open();
         let count = 0;
 
         for (const file of files) {
@@ -1690,14 +1885,34 @@ export default class TagLowercasePlugin extends Plugin {
                         endIndex = i;
                     }
 
-                    // Get current tags value
-                    const cache = this.app.metadataCache.getFileCache(file);
-                    let tags = cache?.frontmatter?.[keyName];
-                    if (!tags) return content; // Empty? 
+                    // Get current tags value from the lines directly (Bug 3 Fix)
+                    const valueLine = lines[keyIndex];
+                    const inlineValue = valueLine.split(':')[1]?.trim();
+                    let tags: string[] = [];
 
-                    if (typeof tags === 'string') tags = tags.split(',').map(t => t.trim());
-                    if (!Array.isArray(tags)) tags = [tags];
-                    tags = tags.filter((t: any) => t && typeof t === 'string' && t.trim().length > 0);
+                    if (inlineValue && inlineValue !== '') {
+                        if (inlineValue.startsWith('[') && inlineValue.endsWith(']')) {
+                            // Inline array: [a, b]
+                            tags = inlineValue.substring(1, inlineValue.length - 1)
+                                .split(',')
+                                .map(t => t.trim().replace(/^["']|["']$/g, ''))
+                                .filter(t => t.length > 0);
+                        } else {
+                            // Single value: tag1
+                            tags = [inlineValue.replace(/^["']|["']$/g, '')];
+                        }
+                    } else if (endIndex > keyIndex) {
+                        // YAML List
+                        for (let i = keyIndex + 1; i <= endIndex; i++) {
+                            const line = lines[i].trim();
+                            if (line.startsWith('-')) {
+                                const val = line.substring(1).trim().replace(/^["']|["']$/g, '');
+                                // HARD IGNORE: If this is the specific template placeholder, skip this file
+                                if (val.includes('{ tags }')) return content;
+                                tags.push(val);
+                            }
+                        }
+                    }
 
                     if (tags.length === 0) return content;
 
@@ -1718,19 +1933,127 @@ export default class TagLowercasePlugin extends Plugin {
                     // Splice
                     lines.splice(keyIndex, endIndex - keyIndex + 1, ...newLines);
 
-                    // Issue 5: Secure reconstruction using match indices
+                    // Bug 1 Fix: Correct fmEnd logic
                     const fmStart = content.indexOf('---\n');
-                    const fmEnd = content.indexOf('\n---', fmStart + 4) + 4;
-                    if (fmStart === -1 || fmEnd === -1) return content; // Fallback
+                    const fmEndRaw = content.indexOf('\n---', fmStart + 4);
+                    if (fmStart === -1 || fmEndRaw === -1) return content;
+                    const fmEnd = fmEndRaw + 4;
 
                     return content.substring(0, fmStart + 4) + lines.join('\n') + content.substring(fmEnd - 4);
                 });
                 count++;
-                progressModal.update(count);
+                if (progressModal) progressModal.update(count);
             } catch (e) { console.error('Format conversion failed', e); }
         }
-        progressModal.close();
-        new Notice(`Converted tags to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${count} files.`);
+        this.isBulkOperationInProgress = false;
+        if (!silent) {
+            progressModal?.close();
+            new Notice(`Converted tags to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${count} files.`);
+        }
+    }
+
+    async convertWikiLinkFormat(files: TFile[], format: 'inline' | 'list', silent = false) {
+        this.isBulkOperationInProgress = true;
+        const progressModal = !silent ? new ProgressModal(this.app, files.length) : null;
+        if (progressModal) progressModal.open();
+        let count = 0;
+
+        for (const file of files) {
+            try {
+                await this.app.vault.process(file, (content) => {
+                    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+                    if (!fmMatch) return content;
+
+                    const fmContent = fmMatch[1];
+                    let lines = fmContent.split('\n');
+                    let modified = false;
+
+                    // 1. Identify all wiki-link properties directly from lines (Bug 3 Fix)
+                    const propertiesToConvert: { key: string, values: string[], start: number, end: number }[] = [];
+                    
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        const keyMatch = line.match(/^([^\s:]+):(.*)$/);
+                        if (!keyMatch) continue;
+
+                        const key = keyMatch[1];
+                        if (key.toLowerCase() === 'tags' || key.toLowerCase() === 'tag') continue;
+
+                        let valueStr = keyMatch[2].trim();
+                        let propertyValues: string[] = [];
+                        let endIndex = i;
+
+                        if (valueStr !== '') {
+                            // Inline
+                            if (valueStr.startsWith('[') && valueStr.endsWith(']')) {
+                                // Inline array: [a, b]
+                                const innerStr = valueStr.substring(1, valueStr.length - 1);
+                                // Matches double-quoted strings, single-quoted strings, or bare values separated by commas
+                                const matches = innerStr.match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]+/g) || [];
+                                propertyValues = matches.map(v => v.trim().replace(/^["']|["']$/g, ''));
+                            } else {
+                                // Single value: tag1
+                                propertyValues = [valueStr.replace(/^["']|["']$/g, '')];
+                            }
+                        } else {
+                            // Possible Multiline
+                            for (let j = i + 1; j < lines.length; j++) {
+                                if (lines[j].match(/^\S/)) break;
+                                const listMatch = lines[j].trim().match(/^-\s*(.*)$/);
+                                if (listMatch) {
+                                    propertyValues.push(listMatch[1].trim().replace(/^["']|["']$/g, ''));
+                                    endIndex = j;
+                                }
+                            }
+                        }
+
+                        // Check if it's a wiki-link property (refined detection)
+                        const isWikiLink = propertyValues.some(v => v.startsWith('[[') && v.endsWith(']]'));
+
+                        if (isWikiLink && propertyValues.length > 0) {
+                            propertiesToConvert.push({ key, values: propertyValues, start: i, end: endIndex });
+                        }
+                        
+                        // Skip the lines we already processed for this property
+                        i = endIndex;
+                    }
+
+                    // 2. Process conversions (Reverse order to keep indices stable)
+                    for (let i = propertiesToConvert.length - 1; i >= 0; i--) {
+                        const prop = propertiesToConvert[i];
+                        const quotedLinks = prop.values.map(l => `"${l.replace(/"/g, '\\"')}"`);
+                        const newLines: string[] = [];
+
+                        if (format === 'inline') {
+                            newLines.push(`${prop.key}: [${quotedLinks.join(', ')}]`);
+                        } else {
+                            newLines.push(`${prop.key}:`);
+                            quotedLinks.forEach(l => newLines.push(`  - ${l}`));
+                        }
+
+                        lines.splice(prop.start, prop.end - prop.start + 1, ...newLines);
+                        modified = true;
+                    }
+
+                    if (!modified) return content;
+
+                    // Bug 1 Fix: Correct fmEnd logic
+                    const fmStart = content.indexOf('---\n');
+                    const fmEndRaw = content.indexOf('\n---', fmStart + 4);
+                    if (fmStart === -1 || fmEndRaw === -1) return content;
+                    const fmEnd = fmEndRaw + 4;
+
+                    return content.substring(0, fmStart + 4) + lines.join('\n') + content.substring(fmEnd - 4);
+                });
+                count++;
+                if (progressModal) progressModal.update(count);
+            } catch (e) { console.error('Wiki link format conversion failed', e); }
+        }
+        this.isBulkOperationInProgress = false;
+        if (!silent) {
+            progressModal?.close();
+            new Notice(`Converted wiki links to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${count} files.`);
+        }
     }
 
     // Automated Standardization removed per user request: "THE PLUGIN SHOULD NOT FIX INVALID TAGS"
@@ -1769,6 +2092,7 @@ export default class TagLowercasePlugin extends Plugin {
                 if (typeof t !== 'string') return t;
                 const hasHash = t.startsWith('#');
                 const raw = hasHash ? t.substring(1) : t;
+                if (this.isTagProtected(raw)) return t;
                 if (aliases[raw]) {
                     modified = true;
                     return hasHash ? '#' + aliases[raw] : aliases[raw];
@@ -1806,6 +2130,7 @@ export default class TagLowercasePlugin extends Plugin {
                 
                 result = result.replace(regex, (m, prefix, hash, captured, offset) => {
                     if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
+                    if (this.isTagProtected(captured)) return m;
                     
                     if (canonical !== alias) modified = true;
                     return prefix + hash + canonical;
@@ -1827,6 +2152,7 @@ export default class TagLowercasePlugin extends Plugin {
                 if (typeof t !== 'string') return t;
                 const hasHash = t.startsWith('#');
                 const clean = hasHash ? t.substring(1) : t;
+                if (this.isTagProtected(clean)) return t;
                 const converted = this.convertTagContent(clean, overrides);
                 return hasHash ? '#' + converted : converted;
             };
@@ -1857,7 +2183,10 @@ export default class TagLowercasePlugin extends Plugin {
         });
 
         await this.app.vault.process(file, (data) => {
-            finalContent = this.transformContent(data, overrides);
+            const codeBlockRanges = this.getCodeBlockRanges(data);
+            const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
+            const skipStart = fmMatch ? fmMatch[0].length : 0;
+            finalContent = this.transformContent(data, skipStart, codeBlockRanges, overrides);
             return finalContent;
         });
         
@@ -1896,28 +2225,11 @@ export default class TagLowercasePlugin extends Plugin {
         return s;
     }
 
-    private transformContent(content: string, overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }): string {
-        // Skip code blocks
-        const codeBlockRegex = /```[\s\S]*?```|`[^`\n]+`/g;
-        const codeBlocks: { start: number; end: number }[] = [];
-        let match;
-
-        // Issue 11: Skip frontmatter in transformContent to avoid double transformation
-        const fmMatch = content.match(/^---\n[\s\S]*?\n---/);
-        const skipStart = fmMatch ? fmMatch[0].length : 0;
-
-        while ((match = codeBlockRegex.exec(content)) !== null) {
-            codeBlocks.push({ start: match.index, end: match.index + match[0].length });
-        }
-
+    private transformContent(content: string, skipStart: number, codeBlocks: { start: number; end: number }[], overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }): string {
         return content.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
-            // Check if inside frontmatter
             if (offset < skipStart) return fullMatch;
-
-            // Check if inside code block
-            if (codeBlocks.some(b => offset >= b.start && offset < b.end)) {
-                return fullMatch;
-            }
+            if (codeBlocks.some(b => offset >= b.start && offset < b.end)) return fullMatch;
+            if (this.isTagProtected(tag.substring(1))) return fullMatch;
 
             const clean = tag.substring(1);
             const converted = this.convertTagContent(clean, overrides);
@@ -1931,6 +2243,7 @@ export default class TagLowercasePlugin extends Plugin {
         const changes: FileChange[] = [];
         let processedCount = 0;
 
+        this.isBulkOperationInProgress = true;
         const progressModal = new ProgressModal(this.app, files.length);
         progressModal.open();
 
@@ -1952,6 +2265,7 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.update(processedCount);
             }
         }
+        this.isBulkOperationInProgress = false;
         progressModal.close();
 
         if (changes.length > 0) {
@@ -2874,7 +3188,22 @@ class OrphanTagsModal extends Modal {
             return;
         }
 
-        contentEl.createEl('p', { text: `Found ${orphans.length} orphaned tags:` });
+        if (orphans.length > 0) {
+            const deleteBtn = contentEl.createEl('button', { text: 'Delete All Orphans', cls: 'mod-warning btm-action-btn' });
+            deleteBtn.onclick = () => {
+                new BtmConfirmationModal(
+                    this.app,
+                    'Delete All Orphans',
+                    `Are you sure you want to delete ${orphans.length} orphaned tags? This will remove them from all files.`,
+                    async () => {
+                        this.close();
+                        const tagsToDelete = orphans.map(o => o.tag);
+                        const modifiedCount = await this.plugin.deleteTags(tagsToDelete, true);
+                        new Notice(`Successfully deleted ${tagsToDelete.length} orphan tags across ${modifiedCount} files.`);
+                    }
+                ).open();
+            };
+        }
 
         const listEl = contentEl.createDiv({ cls: 'btm-orphan-list' });
 
@@ -3211,6 +3540,24 @@ class TagManagerModal extends Modal {
         const replaceCol = renameContainer.createDiv({ cls: 'btm-field-column' });
         replaceCol.createEl('label', { text: 'Replace' });
         this.replaceInput = new TextComponent(replaceCol).setPlaceholder('#new-tag');
+        const renameWarning = replaceCol.createDiv({ cls: 'btm-conflict-warning', attr: { style: 'color: var(--text-warning); font-size: 11px; margin-top: 4px; display: none;' } });
+
+        new InlineTagSuggest(this.app, this.replaceInput.inputEl, replaceCol, (t) => {
+            this.replaceInput.setValue(t);
+            this.replaceInput.inputEl.dispatchEvent(new Event('input'));
+        });
+
+        this.replaceInput.inputEl.addEventListener('input', () => {
+            const target = this.replaceInput.getValue().trim();
+            const cleanTarget = target.replace(/^#/, '');
+            const globalTags = (this.plugin.app.metadataCache as any).getTags();
+            if (globalTags['#' + cleanTarget] !== undefined) {
+                renameWarning.textContent = `⚠️ #${cleanTarget} already exists. Renaming will merge these tags.`;
+                renameWarning.style.display = 'block';
+            } else {
+                renameWarning.style.display = 'none';
+            }
+        });
 
         // Col 3: Action
         const actionCol = renameContainer.createDiv({ cls: 'btm-field-column' });
@@ -3247,10 +3594,32 @@ class TagManagerModal extends Modal {
         const targetCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         targetCol.createEl('label', { text: 'Target' });
         this.mergeTargetInput = new TextComponent(targetCol).setPlaceholder('#merged');
+        const mergeWarning = targetCol.createDiv({ cls: 'btm-conflict-warning', attr: { style: 'color: var(--text-warning); font-size: 11px; margin-top: 4px; display: none;' } });
+
+        new InlineTagSuggest(this.app, this.mergeTargetInput.inputEl, targetCol, (t) => {
+            this.mergeTargetInput.setValue(t);
+            this.mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
+        });
+
+        this.mergeTargetInput.inputEl.addEventListener('input', () => {
+            const target = this.mergeTargetInput.getValue().trim();
+            const cleanTarget = target.replace(/^#/, '');
+            const globalTags = (this.plugin.app.metadataCache as any).getTags();
+            if (globalTags['#' + cleanTarget] !== undefined) {
+                mergeWarning.textContent = `⚠️ #${cleanTarget} already exists. This will merge into the existing tag.`;
+                mergeWarning.style.display = 'block';
+            } else {
+                mergeWarning.style.display = 'none';
+            }
+        });
+
         const targetSuggestBtn = targetCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(targetSuggestBtn, 'search');
         targetSuggestBtn.createSpan({ text: ' Search' });
-        targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => this.mergeTargetInput.setValue(t)).open();
+        targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
+            this.mergeTargetInput.setValue(t);
+            this.mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
+        }).open();
 
         // Col 3: Action
         const mergeActionCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
@@ -3477,11 +3846,59 @@ class TagManagerModal extends Modal {
         // --- Metadata Utilities ---
         const utilBox = contentEl.createDiv({ cls: 'btm-section-box' });
         utilBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Metadata Utilities' });
-        const utilRow = utilBox.createDiv({ cls: 'btm-action-row' });
+        const utilRow = utilBox.createDiv({ cls: 'btm-util-column' });
         
-        const btnStandardize = this.createIconButton(utilRow, 'file-check', 'Standardise Properties');
-        setTooltip(btnStandardize, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
-        btnStandardize.onclick = () => this.plugin.standardiseProperties();
+        const btnClean = this.createIconButton(utilRow, 'file-check', 'Clean front matter formatting');
+        setTooltip(btnClean, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
+        btnClean.onclick = () => this.plugin.standardiseProperties();
+
+        const btnAllInline = this.createIconButton(utilRow, 'list-plus', 'Standarise to Inline Array');
+        setTooltip(btnAllInline, 'Convert all tags AND wiki link properties to Inline Array format [ ]');
+        btnAllInline.onclick = async () => {
+            const files = this.plugin.getFilteredFiles();
+            new BtmConfirmationModal(
+                this.app,
+                'Standardise All to Inline Array',
+                `Are you sure you want to convert all tags and wiki links to Inline Array across ${files.length} files?`,
+                async () => {
+                    const progressModal = new ProgressModal(this.app, files.length * 2);
+                    progressModal.open();
+                    
+                    await this.plugin.convertTagFormat(files, 'inline', true);
+                    progressModal.update(files.length);
+                    
+                    await this.plugin.convertWikiLinkFormat(files, 'inline', true);
+                    
+                    progressModal.close();
+                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    new Notice('Finished standardising all properties to Inline Array.');
+                }
+            ).open();
+        };
+
+        const btnAllList = this.createIconButton(utilRow, 'list-minus', 'Standarise to YAML List');
+        setTooltip(btnAllList, 'Convert all tags AND wiki link properties to multiline YAML List format -');
+        btnAllList.onclick = async () => {
+            const files = this.plugin.getFilteredFiles();
+            new BtmConfirmationModal(
+                this.app,
+                'Standardise All to YAML List',
+                `Are you sure you want to convert all tags and wiki links to YAML List across ${files.length} files?`,
+                async () => {
+                    const progressModal = new ProgressModal(this.app, files.length * 2);
+                    progressModal.open();
+                    
+                    await this.plugin.convertTagFormat(files, 'list', true);
+                    progressModal.update(files.length);
+                    
+                    await this.plugin.convertWikiLinkFormat(files, 'list', true);
+                    
+                    progressModal.close();
+                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    new Notice('Finished standardising all properties to YAML List.');
+                }
+            ).open();
+        };
 
         // --- Action Row (Bottom) ---
         const actionBox = contentEl.createDiv({ cls: 'btm-section-box' });
@@ -3705,6 +4122,55 @@ class TagManagerModal extends Modal {
         createStatLink(locDetails, stats.locationStats.frontmatter.length, 'frontmatter', stats.locationStats.frontmatter);
         createStatLink(locDetails, stats.locationStats.body.length, 'body', stats.locationStats.body);
 
+        // Wiki Link Format Style
+        const wikiBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
+        wikiBox.createDiv({ text: 'Wiki Link Format Style', cls: 'btm-metric-label' });
+
+        const wikiContent = wikiBox.createDiv({ cls: 'btm-metric-details', attr: { style: 'display:block; margin-bottom: 5px;' } });
+
+        const createWikiLinkStats = (label: string, files: TFile[]) => {
+            if (files.length > 0) {
+                const link = wikiContent.createEl('a', { text: `${label}: ${files.length} files`, cls: 'btm-stat-link', attr: { style: 'display:block;' } });
+                link.onclick = () => {
+                    this.close();
+                    new SimpleFileListModal(this.app, label, files).open();
+                };
+            } else {
+                wikiContent.createDiv({ text: `${label}: 0 files`, attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
+            }
+        };
+
+        createWikiLinkStats('YAML List', stats.wikiLinkStats.yamlList);
+        createWikiLinkStats('Inline Array', stats.wikiLinkStats.inlineArray);
+
+        const wikiActions = wikiBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
+
+        const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
+        btnWikiToInline.onclick = async () => {
+            new BtmConfirmationModal(
+                this.app,
+                'Convert Wiki Links to Inline Array',
+                'Are you sure you want to convert ALL wiki link properties to the ["[[Link]]"] inline format?',
+                async () => {
+                    await this.plugin.convertWikiLinkFormat(files, 'inline');
+                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                }
+            ).open();
+        };
+
+        const btnWikiToList = wikiActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
+        btnWikiToList.onclick = async () => {
+            new BtmConfirmationModal(
+                this.app,
+                'Convert Wiki Links to YAML List',
+                'Are you sure you want to convert ALL wiki link properties to the YAML list format?',
+                async () => {
+                    await this.plugin.convertWikiLinkFormat(files, 'list');
+                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                }
+            ).open();
+        };
+
         if (stats.inlineFiles.length > 0) {
             locBox.createDiv({ cls: 'btm-separator' }); // visual separator
             const nestedLink = locBox.createEl('a', {
@@ -3722,8 +4188,50 @@ class TagManagerModal extends Modal {
         const lengthBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         lengthBox.createDiv({ text: 'Length', cls: 'btm-metric-label' });
         const lengthDetails = lengthBox.createDiv({ cls: 'btm-metric-details' });
-        lengthDetails.createSpan({ text: `avg: ${stats.lengthStats.avgLength} chars ` });
         createStatLink(lengthDetails, stats.lengthStats.long.length, 'long (>25)', stats.lengthStats.long);
+
+        // Case Duplicates
+        if (stats.caseDuplicates.length > 0) {
+            const dupBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
+            dupBox.createDiv({ text: 'Potential Case Duplicates', cls: 'btm-metric-label' });
+            const dupDetails = dupBox.createDiv({ cls: 'btm-metric-details' });
+            
+            const dupLink = dupDetails.createEl('a', { 
+                text: `${stats.caseDuplicates.length} pairs of duplicate tags`, 
+                cls: 'btm-stat-link btm-warning-link' 
+            });
+            dupLink.onclick = () => {
+                this.close();
+                const listEl = new TagListModal(this.app, 'Case Duplicates', stats.caseDuplicates.flatMap(d => d.variants));
+                listEl.open();
+            };
+
+            const mergeAllBtn = dupBox.createEl('button', { text: 'Merge all to canonical', cls: 'btm-small-btn btm-warning-btn', attr: { style: 'margin-top: auto;' } });
+            setTooltip(mergeAllBtn, 'Merge all case variants into their most-used versions');
+            mergeAllBtn.onclick = async () => {
+                new BtmConfirmationModal(
+                    this.app,
+                    'Merge Case Duplicates',
+                    `Are you sure you want to merge ${stats.caseDuplicates.length} sets of case-variant tags? This will unify them using their most-used versions.`,
+                    async () => {
+                        this.close();
+                        const progressModal = new ProgressModal(this.app, stats.caseDuplicates.length);
+                        progressModal.open();
+                        
+                        let i = 0;
+                        for (const { canonical, variants } of stats.caseDuplicates) {
+                            const sources = variants.filter(v => v !== canonical);
+                            await this.plugin.mergeTags(sources, canonical);
+                            i++;
+                            progressModal.update(i);
+                        }
+                        
+                        progressModal.close();
+                        new Notice('Finished merging case duplicates.');
+                    }
+                ).open();
+            };
+        }
 
         // Async check for invalid tags
         this.checkInvalidTags().catch(e => console.error("Failed to check invalid tags", e));
@@ -3869,11 +4377,29 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        new Setting(containerEl)
+            .setName('Wiki Link Output Format')
+            .setDesc('Format for properties containing wiki links')
+            .addDropdown(dropdown => dropdown
+                .addOption('inline', 'Inline Array ["[[Link1]]", "[[Link2]]"]')
+                .addOption('list', 'YAML List (- "[[Link1]]")')
+                .setValue(this.plugin.settings.wikiLinkFormat)
+                .onChange(async (value: TagLowercaseSettings['wikiLinkFormat']) => {
+                    this.plugin.settings.wikiLinkFormat = value;
+                    await this.plugin.saveSettings();
+                }));
+
         new Setting(containerEl).setName('Aliases').setHeading();
         containerEl.createEl('p', { text: 'Define tag aliases that automatically correct to canonical tags.' });
 
         const aliasesContainer = containerEl.createDiv({ cls: 'btm-aliases' });
         this.renderAliases(aliasesContainer);
+
+        new Setting(containerEl).setName('Protected Tags').setHeading();
+        containerEl.createEl('p', { text: 'Tags listed here will be ignored by all rename, merge, and delete operations. You can use an asterisk (*) at the end for wildcards (e.g. #status/*).' });
+
+        const protectedContainer = containerEl.createDiv({ cls: 'btm-aliases' });
+        this.renderProtectedTags(protectedContainer);
 
         new Setting(containerEl).setName('History').setHeading();
 
@@ -3954,6 +4480,50 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 this.plugin.settings.aliases[a] = c;
                 await this.plugin.saveSettings();
                 this.renderAliases(container);
+            }
+        };
+    }
+
+    renderProtectedTags(container: HTMLElement) {
+        container.empty();
+        // Ensure array exists to prevent mapping errors on fresh installs
+        const protectedTags = this.plugin.settings.protectedTags || [];
+
+        protectedTags.forEach((tag, index) => {
+            new Setting(container)
+                .setName(tag)
+                .addButton(btn => btn
+                    .setIcon('trash')
+                    .setWarning()
+                    .onClick(async () => {
+                        this.plugin.settings.protectedTags.splice(index, 1);
+                        await this.plugin.saveSettings();
+                        this.renderProtectedTags(container);
+                    }));
+        });
+
+        const addRow = container.createDiv({ cls: 'btm-add-alias' });
+        const tagInput = new TextComponent(addRow).setPlaceholder('#tag/to/protect');
+        
+        // Quick inline flex styling so the input fills the row neatly
+        tagInput.inputEl.style.flex = '1';
+        
+        const addBtn = addRow.createEl('button', { text: 'Protect' });
+        addBtn.onclick = async () => {
+            let t = tagInput.getValue().trim();
+            if (t) {
+                if (!t.startsWith('#')) t = '#' + t;
+                
+                // Safety initialization just in case
+                if (!this.plugin.settings.protectedTags) {
+                    this.plugin.settings.protectedTags = [];
+                }
+                
+                if (!this.plugin.settings.protectedTags.includes(t)) {
+                    this.plugin.settings.protectedTags.push(t);
+                    await this.plugin.saveSettings();
+                    this.renderProtectedTags(container);
+                }
             }
         };
     }

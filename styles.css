@@ -228,6 +228,67 @@
     min-width: 100px;
 }
 
+/* Better alignment for buttons with icons */
+.btm-icon-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px 12px;
+    height: auto;
+    min-height: 36px;
+}
+
+.btm-btn-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.btm-btn-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Vertical layout for utility buttons with long labels */
+.btm-util-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.btm-util-column .btm-icon-btn {
+    justify-content: flex-start;
+    width: 100%;
+}
+
+.btm-inline-suggestions {
+    position: absolute;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    z-index: var(--layer-menu);
+    max-height: 200px;
+    overflow-y: auto;
+    width: auto;
+    min-width: 200px;
+    margin-top: 4px;
+}
+
+.btm-suggest-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: var(--font-ui-small);
+}
+
+.btm-suggest-item:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-accent);
+}
+
 /* Progress Modal */
 .btm-progress-modal {
     min-width: 300px;
