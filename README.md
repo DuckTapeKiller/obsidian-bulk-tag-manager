@@ -10,7 +10,7 @@
 
 ## Table of Contents
 
-- [Features](#features)
+- [Features](#colorredtextfeatures)
     - [Dashboard Overview](#dashboard-overview)
     - [Rename, Merge, and Delete](#rename-merge-and-delete)
     - [Bulk Standardisation and Settings](#bulk-standardisation-and-settings)
@@ -19,11 +19,11 @@
     - [Protected Tags](#protected-tags)
     - [Tag Aliases](#tag-aliases)
     - [Context Menu Integration](#context-menu-integration)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Commands](#commands)
-- [Tips](#tips)
-- [Acknowledgements](#acknowledgements)
+- [Installation](#colorredtextinstallation)
+- [Usage](#colorredtextusage)
+- [Commands](#colorredtextcommands)
+- [Tips](#colorredtexttips)
+- [Acknowledgements](#colorredtextacknowledgements)
 
 ---
 
@@ -32,7 +32,7 @@
 
 ---
 
-## Features
+## $\color{red}{\text{Features}}$
 
 ### Dashboard Overview
 
@@ -279,7 +279,7 @@ Holding **Ctrl/Cmd + Click** on any tag in the editor or reading view opens its 
 
 ---
 
-## Installation
+## $\color{red}{\text{Installation}}$
 
 1. Download the latest release from GitHub.
 2. Extract `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/bulk-tag-manager/`.
@@ -287,7 +287,7 @@ Holding **Ctrl/Cmd + Click** on any tag in the editor or reading view opens its 
 
 ---
 
-## Usage
+## $\color{red}{\text{Usage}}$
 
 - Click the **Tags icon** in the left ribbon for quick single-tag actions (rename, delete, search, tag page, random note).
 - Use **Settings > Bulk Tag Manager** for bulk operations, vault-wide cleanup, statistics, and advanced tools.
@@ -296,7 +296,7 @@ Holding **Ctrl/Cmd + Click** on any tag in the editor or reading view opens its 
 
 ---
 
-## Commands
+## $\color{red}{\text{Commands}}$
 
 | Command | Description |
 |---------|-------------|
@@ -309,7 +309,7 @@ Holding **Ctrl/Cmd + Click** on any tag in the editor or reading view opens its 
 
 ---
 
-## Tips
+## $\color{red}{\text{Tips}}$
 
 - **Use Preview**: The bulk convert option shows a preview of every change before applying. Use it to verify before committing.
 - **Check History**: Use the History modal after any operation to verify exactly which files were changed and to undo if needed.
@@ -319,6 +319,6 @@ Holding **Ctrl/Cmd + Click** on any tag in the editor or reading view opens its 
 
 ---
 
-## Acknowledgements
+## $\color{red}{\text{Acknowledgements}}$
 
 This plugin incorporates and extends the context menu and tag page functionality originally created by [pjeby](https://github.com/pjeby) in the [Tag Wrangler](https://github.com/pjeby/tag-wrangler) plugin.
