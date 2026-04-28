@@ -195,6 +195,31 @@ function menuForEvent(event: MouseEvent): Menu {
     return menu;
 }
 
+function parseCsvRenamePairs(csvText: string): { from: string; to: string }[] {
+    const lines = csvText
+        .split(/\r?\n/)
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('#'));
+
+    const pairs: { from: string; to: string }[] = [];
+
+    for (const line of lines) {
+        const commaIdx = line.indexOf(',');
+        if (commaIdx === -1) continue;
+
+        const from = line.substring(0, commaIdx).trim().replace(/^#/, '');
+        const to = line.substring(commaIdx + 1).trim().replace(/^#/, '');
+
+        // Skip header row
+        if (from === 'old_tag' && to === 'new_tag') continue;
+        if (!from || !to) continue;
+
+        pairs.push({ from, to });
+    }
+
+    return pairs;
+}
+
 class InlineTagSuggest {
     private suggestEl: HTMLElement;
     private isOpen = false;
@@ -1465,12 +1490,25 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             const cache = this.app.metadataCache.getFileCache(file);
             if (cache?.tags) {
-                cache.tags.forEach(t => tagsInScope.add(t.tag.startsWith('#') ? t.tag.substring(1) : t.tag));
+                cache.tags.forEach(t => tagsInScope.add(
+                    (t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase()
+                ));
             }
             if (cache?.frontmatter) {
                 const extract = (val: any) => {
-                    if (typeof val === 'string') val.split(',').forEach(v => tagsInScope.add(v.trim().startsWith('#') ? v.trim().substring(1) : v.trim()));
-                    else if (Array.isArray(val)) val.forEach(v => typeof v === 'string' && tagsInScope.add(v.startsWith('#') ? v.substring(1) : v));
+                    if (typeof val === 'string') {
+                        val.split(',').forEach((v: string) => {
+                            const clean = v.trim().startsWith('#') ? v.trim().substring(1) : v.trim();
+                            if (clean) tagsInScope.add(clean.toLowerCase());
+                        });
+                    } else if (Array.isArray(val)) {
+                        val.forEach((v: any) => {
+                            if (typeof v === 'string') {
+                                const clean = v.startsWith('#') ? v.substring(1) : v;
+                                tagsInScope.add(clean.toLowerCase());
+                            }
+                        });
+                    }
                 };
                 if (cache.frontmatter.tags) extract(cache.frontmatter.tags);
                 if (cache.frontmatter.tag) extract(cache.frontmatter.tag);
@@ -1479,7 +1517,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         const missingTags: string[] = [];
         for (const s of sourcesClean) {
-            if (!tagsInScope.has(s)) {
+            if (!tagsInScope.has(s.toLowerCase())) {
                 missingTags.push('#' + s);
             }
         }
@@ -1629,6 +1667,406 @@ export default class TagLowercasePlugin extends Plugin {
             new Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
         } else {
             new Notice(`No files were modified. (Tags might not exist in the current scope)`);
+        }
+    }
+
+    async nestTags(parent: string, children: string[]): Promise<void> {
+        const parentClean = parent.replace(/^#/, '').replace(/^\/+|\/+$/g, '').trim();
+        if (!parentClean) {
+            new Notice('Please provide a parent tag.');
+            return;
+        }
+
+        // Validate parent tag name (no spaces, valid chars)
+        if (!/^[\p{L}\p{N}_/-]+$/u.test(parentClean)) {
+            new Notice(`Invalid parent tag name: #${parentClean}`);
+            return;
+        }
+
+        const childrenClean = children
+            .map(c => c.replace(/^#/, '').trim())
+            .filter(c => c && c !== parentClean);
+
+        if (childrenClean.length === 0) {
+            new Notice('No valid child tags to nest.');
+            return;
+        }
+
+        const protectedChildren = childrenClean.filter(c => this.isTagProtected(c));
+        if (protectedChildren.length > 0) {
+            new Notice(`⚠️ Protected tags cannot be nested: ${protectedChildren.map(c => '#' + c).join(', ')}`);
+            return;
+        }
+
+        // Filter out tags already nested under the parent
+        const alreadyNested = childrenClean.filter(c => c.startsWith(parentClean + '/'));
+        const toNest = childrenClean.filter(c => !c.startsWith(parentClean + '/'));
+
+        if (alreadyNested.length > 0) {
+            new Notice(`Skipping ${alreadyNested.length} tag(s) already under #${parentClean}.`);
+        }
+
+        if (toNest.length === 0) {
+            new Notice('All selected tags are already nested under that parent.');
+            return;
+        }
+
+        // Build the rename map: child → parent/child
+        const renameMap = new Map<string, string>();
+        for (const child of toNest) {
+            renameMap.set(child, `${parentClean}/${child}`);
+        }
+
+        // Validate: every child tag must exist in scope
+        const files = this.getFilteredFiles();
+        const tagsInScope = new Set<string>();
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (cache?.tags) {
+                cache.tags.forEach(t => tagsInScope.add(
+                    (t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase()
+                ));
+            }
+            if (cache?.frontmatter) {
+                const extract = (val: any) => {
+                    if (typeof val === 'string') {
+                        val.split(',').forEach((v: string) => {
+                            const clean = v.trim().startsWith('#') ? v.trim().substring(1) : v.trim();
+                            if (clean) tagsInScope.add(clean.toLowerCase());
+                        });
+                    } else if (Array.isArray(val)) {
+                        val.forEach((v: any) => {
+                            if (typeof v === 'string') {
+                                const clean = v.startsWith('#') ? v.substring(1) : v;
+                                tagsInScope.add(clean.toLowerCase());
+                            }
+                        });
+                    }
+                };
+                if (cache.frontmatter.tags) extract(cache.frontmatter.tags);
+                if (cache.frontmatter.tag) extract(cache.frontmatter.tag);
+            }
+        }
+
+        const missingTags: string[] = [];
+        for (const child of toNest) {
+            if (!tagsInScope.has(child.toLowerCase())) {
+                missingTags.push('#' + child);
+            }
+        }
+
+        if (missingTags.length > 0) {
+            new Notice(`Nest aborted: ${missingTags.join(', ')} not found in current scope. Check for typos or scope filters.`);
+            return;
+        }
+
+        new Notice(`Nesting ${toNest.length} tags under #${parentClean}...`);
+
+        this.isBulkOperationInProgress = true;
+        const progressModal = new ProgressModal(this.app, files.length);
+        progressModal.open();
+
+        let processedCount = 0;
+        const changes: FileChange[] = [];
+
+        // Build a single regex that matches any of the child tags
+        const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const childPatterns = toNest.map(s => escapeRegExp(s)).join('|');
+        const tagRegex = new RegExp(`(^|\\s)(#)((?:${childPatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`, 'gu');
+
+        for (const file of files) {
+            tagRegex.lastIndex = 0;
+            try {
+                const before = await this.app.vault.read(file);
+                let modified = false;
+
+                // Process frontmatter tags
+                await this.app.fileManager.processFrontMatter(file, (fm) => {
+                    const processSingleTag = (t: string): string => {
+                        if (typeof t !== 'string') return t;
+                        const hasHash = t.startsWith('#');
+                        const raw = hasHash ? t.substring(1) : t;
+                        if (this.isTagProtected(raw)) return t;
+
+                        for (const [child, nested] of renameMap) {
+                            if (raw === child) {
+                                modified = true;
+                                return hasHash ? '#' + nested : nested;
+                            }
+                            if (raw.startsWith(child + '/')) {
+                                modified = true;
+                                const newRaw = nested + raw.substring(child.length);
+                                return hasHash ? '#' + newRaw : newRaw;
+                            }
+                        }
+                        return t;
+                    };
+
+                    const handleTagKey = (key: string) => {
+                        if (!fm[key]) return;
+                        if (Array.isArray(fm[key])) {
+                            const newTags = fm[key].map(processSingleTag);
+                            // Deduplicate
+                            const uniqueTags: string[] = [];
+                            const seen = new Set<string>();
+                            for (const t of newTags) {
+                                const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
+                                if (!seen.has(clean)) { seen.add(clean); uniqueTags.push(t); }
+                            }
+                            if (uniqueTags.length !== fm[key].length || uniqueTags.some((t: string, i: number) => t !== fm[key][i])) {
+                                fm[key] = uniqueTags;
+                                modified = true;
+                            }
+                        } else if (typeof fm[key] === 'string') {
+                            const newTag = processSingleTag(fm[key]);
+                            if (newTag !== fm[key]) { fm[key] = newTag; modified = true; }
+                        }
+                    };
+
+                    handleTagKey('tags');
+                    handleTagKey('tag');
+                });
+
+                // Process inline body tags
+                let after = before;
+                await this.app.vault.process(file, (data) => {
+                    const codeBlockRanges = this.getCodeBlockRanges(data);
+                    const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
+                    const skipStart = fmMatch ? fmMatch[0].length : 0;
+
+                    const newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
+                        if (offset < skipStart) return match;
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+                        if (this.isTagProtected(capturedTag)) return match;
+
+                        // Find which child tag matched and replace with nested version
+                        for (const [child, nested] of renameMap) {
+                            if (capturedTag === child) {
+                                modified = true;
+                                return prefix + hash + nested;
+                            }
+                            if (capturedTag.startsWith(child + '/')) {
+                                modified = true;
+                                return prefix + hash + nested + capturedTag.substring(child.length);
+                            }
+                        }
+                        return match;
+                    });
+
+                    tagRegex.lastIndex = 0;
+                    after = newData;
+                    return newData;
+                });
+
+                if (modified && before !== after) {
+                    changes.push({ path: file.path, before, after });
+                }
+
+                processedCount++;
+                progressModal.update(processedCount);
+            } catch (e) {
+                console.error(`Failed to process ${file.path}:`, e);
+                processedCount++;
+                progressModal.update(processedCount);
+            }
+        }
+        this.isBulkOperationInProgress = false;
+
+        progressModal.close();
+
+        if (changes.length > 0) {
+            await this.addToHistory({
+                type: 'nest',
+                description: `Nest ${toNest.map(s => '#' + s).join(', ')} → #${parentClean}/...`,
+                changes
+            });
+            new Notice(`Nested ${toNest.length} tags under #${parentClean}. ${changes.length} files changed.`);
+        } else {
+            new Notice(`No files were modified. (Tags might not exist in the current scope)`);
+        }
+    }
+
+    async renameTagBatch(pairs: { from: string; to: string }[]) {
+        const validPairs = pairs
+            .map(p => ({
+                from: p.from.replace(/^#/, '').trim(),
+                to: p.to.replace(/^#/, '').trim()
+            }))
+            .filter(p => p.from && p.to && p.from !== p.to);
+
+        if (validPairs.length === 0) {
+            new Notice('No valid rename pairs found.');
+            return;
+        }
+
+        const protectedPairs = validPairs.filter(p => this.isTagProtected(p.from));
+        if (protectedPairs.length > 0) {
+            new Notice(`⚠️ Protected tags skipped: ${protectedPairs.map(p => '#' + p.from).join(', ')}`);
+        }
+
+        const executablePairs = validPairs.filter(p => !this.isTagProtected(p.from));
+        if (executablePairs.length === 0) {
+            new Notice('All pairs are protected. Nothing to rename.');
+            return;
+        }
+
+        // Validate target tag names
+        for (const p of executablePairs) {
+            if (!/^[\p{L}\p{N}_\-/]+$/u.test(p.to)) {
+                new Notice(`Invalid target tag name: #${p.to}`);
+                return;
+            }
+        }
+
+        const renameMap = new Map<string, string>(executablePairs.map(p => [p.from, p.to]));
+
+        const files = this.getFilteredFiles();
+        const changes: FileChange[] = [];
+
+        // Validate all source tags exist in scope
+        const tagsInScope = new Set<string>();
+        for (const file of files) {
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (cache?.tags) {
+                cache.tags.forEach(t => tagsInScope.add(
+                    (t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase()
+                ));
+            }
+            if (cache?.frontmatter) {
+                const extract = (val: any) => {
+                    if (typeof val === 'string') {
+                        val.split(',').forEach((v: string) => {
+                            const clean = v.trim().startsWith('#') ? v.trim().substring(1) : v.trim();
+                            if (clean) tagsInScope.add(clean.toLowerCase());
+                        });
+                    } else if (Array.isArray(val)) {
+                        val.forEach((v: any) => {
+                            if (typeof v === 'string') {
+                                const clean = v.startsWith('#') ? v.substring(1) : v;
+                                tagsInScope.add(clean.toLowerCase());
+                            }
+                        });
+                    }
+                };
+                if (cache.frontmatter.tags) extract(cache.frontmatter.tags);
+                if (cache.frontmatter.tag) extract(cache.frontmatter.tag);
+            }
+        }
+
+        const missingTags = executablePairs
+            .map(p => p.from)
+            .filter(f => !tagsInScope.has(f.toLowerCase()));
+
+        if (missingTags.length > 0) {
+            new Notice(`Warning: ${missingTags.length} source tag(s) not found in scope: ${missingTags.slice(0, 5).map(t => '#' + t).join(', ')}${missingTags.length > 5 ? '…' : ''}. Continuing with found tags.`);
+        }
+
+        new Notice(`Renaming ${executablePairs.length} tags...`);
+
+        const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const sourcePatterns = executablePairs.map(p => escapeRegExp(p.from)).join('|');
+        const tagRegex = new RegExp(
+            `(^|\\s)(#)((?:${sourcePatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`,
+            'gu'
+        );
+
+        this.isBulkOperationInProgress = true;
+        const progressModal = new ProgressModal(this.app, files.length);
+        progressModal.open();
+        let processedCount = 0;
+
+        for (const file of files) {
+            tagRegex.lastIndex = 0;
+            try {
+                const before = await this.app.vault.read(file);
+                let modified = false;
+
+                await this.app.fileManager.processFrontMatter(file, (fm) => {
+                    const processSingleTag = (t: string): string => {
+                        if (typeof t !== 'string') return t;
+                        const hasHash = t.startsWith('#');
+                        const raw = hasHash ? t.substring(1) : t;
+                        if (this.isTagProtected(raw)) return t;
+                        for (const [from, to] of renameMap) {
+                            if (raw === from) { modified = true; return hasHash ? '#' + to : to; }
+                            if (raw.startsWith(from + '/')) {
+                                modified = true;
+                                return hasHash ? '#' + to + raw.substring(from.length) : to + raw.substring(from.length);
+                            }
+                        }
+                        return t;
+                    };
+
+                    const handleTagKey = (key: string) => {
+                        if (!fm[key]) return;
+                        if (Array.isArray(fm[key])) {
+                            const newTags = fm[key].map(processSingleTag);
+                            const uniqueTags: string[] = [];
+                            const seen = new Set<string>();
+                            for (const t of newTags) {
+                                const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
+                                if (!seen.has(clean)) { seen.add(clean); uniqueTags.push(t); }
+                            }
+                            if (uniqueTags.length !== fm[key].length || uniqueTags.some((t: string, i: number) => t !== fm[key][i])) {
+                                fm[key] = uniqueTags;
+                                modified = true;
+                            }
+                        } else if (typeof fm[key] === 'string') {
+                            const n = processSingleTag(fm[key]);
+                            if (n !== fm[key]) { fm[key] = n; modified = true; }
+                        }
+                    };
+
+                    handleTagKey('tags');
+                    handleTagKey('tag');
+                });
+
+                let after = before;
+                await this.app.vault.process(file, (data) => {
+                    const codeBlockRanges = this.getCodeBlockRanges(data);
+                    const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
+                    const skipStart = fmMatch ? fmMatch[0].length : 0;
+
+                    const newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
+                        if (offset < skipStart) return match;
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+                        if (this.isTagProtected(capturedTag)) return match;
+                        for (const [from, to] of renameMap) {
+                            if (capturedTag === from) { modified = true; return prefix + hash + to; }
+                            if (capturedTag.startsWith(from + '/')) {
+                                modified = true;
+                                return prefix + hash + to + capturedTag.substring(from.length);
+                            }
+                        }
+                        return match;
+                    });
+                    tagRegex.lastIndex = 0;
+                    after = newData;
+                    return newData;
+                });
+
+                if (modified && before !== after) changes.push({ path: file.path, before, after });
+                processedCount++;
+                progressModal.update(processedCount);
+            } catch (e) {
+                console.error(`renameTagBatch failed on ${file.path}`, e);
+                processedCount++;
+                progressModal.update(processedCount);
+            }
+        }
+
+        this.isBulkOperationInProgress = false;
+        progressModal.close();
+
+        if (changes.length > 0) {
+            await this.addToHistory({
+                type: 'rename',
+                description: `Batch rename: ${executablePairs.length} pairs (${changes.length} files changed)`,
+                changes
+            });
+            new Notice(`Batch rename complete: ${changes.length} files changed.`);
+        } else {
+            new Notice('Batch rename: no files modified.');
         }
     }
 
@@ -4349,9 +4787,26 @@ class BulkManagerSettingsDashboard {
             arrow.toggleClass('is-collapsed', !isExpanded);
         };
 
-        const renameBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        renameBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Rename Tag' });
-        const renameContainer = renameBox.createDiv({ cls: 'btm-aligned-row' });
+        // --- Tag Rename Options (Grouped) ---
+        const renameOptionsBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        const renameOptionsHeader = renameOptionsBox.createDiv({ cls: 'btm-collapsible-header' });
+        renameOptionsHeader.createSpan({ text: 'Tag Rename Options' });
+        const renameOptionsArrow = renameOptionsHeader.createSpan({ cls: 'btm-header-arrow' });
+        setIcon(renameOptionsArrow, 'chevron-down');
+        
+        const renameOptionsContent = renameOptionsBox.createDiv({ cls: 'btm-collapsible-content' });
+        
+        let isRenameOptionsExpanded = true;
+        renameOptionsHeader.onclick = () => {
+            isRenameOptionsExpanded = !isRenameOptionsExpanded;
+            renameOptionsContent.toggleClass('is-collapsed', !isRenameOptionsExpanded);
+            renameOptionsArrow.toggleClass('is-collapsed', !isRenameOptionsExpanded);
+        };
+
+        // Sub-section: Single Rename
+        const renameSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
+        renameSub.createEl('h4', { text: 'Rename Tag', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        const renameContainer = renameSub.createDiv({ cls: 'btm-aligned-row' });
         const findCol = renameContainer.createDiv({ cls: 'btm-field-column' });
         findCol.createEl('label', { text: 'Find' });
         const findInput = new TextComponent(findCol).setPlaceholder('#old-tag');
@@ -4396,6 +4851,156 @@ class BulkManagerSettingsDashboard {
             void this.updateStats();
         };
 
+        renameOptionsContent.createEl('hr');
+
+        // Sub-section: Batch Rename (table)
+        const batchSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
+        batchSub.createEl('h4', { text: 'Batch Rename', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        batchSub.createEl('p', {
+            text: 'Rename multiple tags at once. Each row is an independent old → new pair.',
+            cls: 'btm-section-desc'
+        });
+
+        const batchPairs: { from: TextComponent; to: TextComponent; row: HTMLElement }[] = [];
+
+        const batchTable = batchSub.createDiv({ cls: 'btm-batch-table' });
+        batchTable.style.cssText = 'display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;';
+
+        const addBatchRow = () => {
+            const row = batchTable.createDiv({ cls: 'btm-batch-row' });
+            row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
+
+            const fromInput = new TextComponent(row).setPlaceholder('#old-tag');
+            fromInput.inputEl.style.flex = '1';
+            new InlineTagSuggest(this.app, fromInput.inputEl, row, (tag) => {
+                fromInput.setValue(tag);
+            });
+
+            const arrow = row.createSpan({ text: '→' });
+            arrow.style.cssText = 'color: var(--text-muted); flex-shrink: 0;';
+
+            const toInput = new TextComponent(row).setPlaceholder('#new-tag');
+            toInput.inputEl.style.flex = '1';
+            new InlineTagSuggest(this.app, toInput.inputEl, row, (tag) => {
+                toInput.setValue(tag);
+            });
+
+            const removeBtn = row.createEl('button', { cls: 'btm-icon-btn' });
+            setIcon(removeBtn, 'x');
+            removeBtn.style.flexShrink = '0';
+            removeBtn.onclick = () => {
+                const idx = batchPairs.findIndex(p => p.row === row);
+                if (idx !== -1) batchPairs.splice(idx, 1);
+                row.remove();
+            };
+
+            batchPairs.push({ from: fromInput, to: toInput, row });
+        };
+
+        addBatchRow();
+        addBatchRow();
+
+        const batchControlRow = batchSub.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between;' } });
+
+        const addRowBtn = batchControlRow.createEl('button', { text: '+ Add row', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        addRowBtn.onclick = () => addBatchRow();
+
+        const btnBatchRename = batchControlRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
+        btnBatchRename.onclick = async () => {
+            const pairs = batchPairs
+                .map(p => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
+                .filter(p => p.from && p.to);
+
+            if (pairs.length === 0) {
+                new Notice('Please fill at least one rename pair.');
+                return;
+            }
+
+            new BtmConfirmationModal(
+                this.app,
+                'Batch Rename',
+                `Apply ${pairs.length} rename pair(s) across the vault?`,
+                async () => {
+                    await this.plugin.renameTagBatch(pairs);
+                    batchPairs.length = 0;
+                    batchTable.empty();
+                    addBatchRow();
+                    addBatchRow();
+                    void this.updateStats();
+                }
+            ).open();
+        };
+
+        renameOptionsContent.createEl('hr');
+
+        // Sub-section: Rename from CSV
+        const csvSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
+        csvSub.createEl('h4', { text: 'Batch Rename from CSV', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        csvSub.createEl('p', {
+            text: 'Upload a CSV with columns old_tag,new_tag to rename many tags at once.',
+            cls: 'btm-section-desc'
+        });
+
+        const csvContainer = csvSub.createDiv({ cls: 'btm-aligned-row' });
+        const csvCol = csvContainer.createDiv({ cls: 'btm-field-column' });
+        csvCol.setAttr('style', 'grid-column: span 2;');
+
+        const csvFileInput = csvCol.createEl('input', { type: 'file' });
+        csvFileInput.accept = '.csv';
+        csvFileInput.style.display = 'none';
+
+        const csvPreview = csvCol.createDiv({ cls: 'btm-csv-preview' });
+        csvPreview.style.cssText = 'font-size: 11px; color: var(--text-muted); margin-top: 6px; max-height: 120px; overflow-y: auto;';
+
+        let parsedCsvPairs: { from: string; to: string }[] = [];
+
+        csvFileInput.addEventListener('change', () => {
+            const file = csvFileInput.files?.[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const text = e.target?.result as string;
+                const lines = text.split('\n');
+                parsedCsvPairs = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (!line) continue;
+                    const [from, to] = line.split(',').map(s => s.trim().replace(/^#/, ''));
+                    if (from && to) parsedCsvPairs.push({ from, to });
+                }
+                csvPreview.textContent = `Found ${parsedCsvPairs.length} pairs. Example: ${parsedCsvPairs[0].from} → ${parsedCsvPairs[0].to}`;
+            };
+            reader.readAsText(file);
+        });
+
+        const csvActionCol = csvContainer.createDiv({ cls: 'btm-field-column' });
+        const csvBtnRow = csvActionCol.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: flex-end;' } });
+        
+        const btnUploadCsv = csvBtnRow.createEl('button', { text: 'Upload CSV', cls: 'btm-action-btn' });
+        btnUploadCsv.onclick = () => csvFileInput.click();
+
+        const btnApplyCsv = csvBtnRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
+        btnApplyCsv.onclick = async () => {
+            if (parsedCsvPairs.length === 0) {
+                new Notice('Please upload a valid CSV first.');
+                return;
+            }
+            new BtmConfirmationModal(
+                this.app,
+                'Batch Rename from CSV',
+                `Rename ${parsedCsvPairs.length} tags from CSV?`,
+                async () => {
+                    await this.plugin.renameTagBatch(parsedCsvPairs);
+                    parsedCsvPairs = [];
+                    csvPreview.textContent = '';
+                    csvFileInput.value = '';
+                    void this.updateStats();
+                }
+            ).open();
+        };
+
+        // --- Original Merge and Search Sections (keep them as they were) ---
         const mergeBox = contentEl.createDiv({ cls: 'btm-section-box' });
         mergeBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Merge Tags' });
         const mergeContainer = mergeBox.createDiv({ cls: 'btm-aligned-row' });
@@ -4443,6 +5048,57 @@ class BulkManagerSettingsDashboard {
                 },
             ).open();
         };
+
+        // --- Nest Tags Section ---
+        const nestBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        nestBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Nest Tags' });
+        const nestContainer = nestBox.createDiv({ cls: 'btm-aligned-row' });
+
+        const nestParentCol = nestContainer.createDiv({ cls: 'btm-field-column' });
+        nestParentCol.createEl('label', { text: 'Parent tag' });
+        const nestParentInput = new TextComponent(nestParentCol).setPlaceholder('#parent (e.g. enfermedades)');
+        const nestParentSuggestBtn = nestParentCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        setIcon(nestParentSuggestBtn, 'search');
+        nestParentSuggestBtn.createSpan({ text: ' Search' });
+        nestParentSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (tag) => {
+            nestParentInput.setValue(tag);
+        }).open();
+        new InlineTagSuggest(this.app, nestParentInput.inputEl, nestParentCol, (tag) => {
+            nestParentInput.setValue(tag);
+        });
+
+        const nestChildCol = nestContainer.createDiv({ cls: 'btm-field-column' });
+        nestChildCol.createEl('label', { text: 'Tags to nest' });
+        const nestChildInput = new TextComponent(nestChildCol).setPlaceholder('#tag1, #tag2, #tag3');
+        const nestSelectBtn = nestChildCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        setIcon(nestSelectBtn, 'list-filter');
+        nestSelectBtn.createSpan({ text: ' Select' });
+        nestSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+            nestChildInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
+        }).open();
+
+        const nestActionCol = nestContainer.createDiv({ cls: 'btm-field-column' });
+        const btnNest = nestActionCol.createEl('button', { text: 'Nest', cls: 'mod-cta btm-action-btn' });
+        btnNest.onclick = async () => {
+            const parent = nestParentInput.getValue().trim();
+            const children = nestChildInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
+            if (!parent || !children.length) {
+                new Notice('Please provide a parent tag and at least one child tag.');
+                return;
+            }
+            const parentClean = parent.replace(/^#/, '');
+            new BtmConfirmationModal(
+                this.app,
+                'Nest Tags',
+                `Nest ${children.length} tag(s) under "#${parentClean}"? Each tag will be renamed to #${parentClean}/tagname.`,
+                async () => {
+                    await this.plugin.nestTags(parent, children);
+                    void this.updateStats();
+                },
+            ).open();
+        };
+
+
 
         const deleteBox = contentEl.createDiv({ cls: 'btm-section-box' });
         deleteBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Delete Tags' });
@@ -5156,6 +5812,209 @@ class TagManagerModal extends Modal {
             } else {
                 new Notice('Please provide source tags and a target.');
             }
+        };
+
+        // --- Nest Tags Section ---
+        const nestBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        nestBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Nest Tags' });
+
+        const nestContainer = nestBox.createDiv({ cls: 'btm-aligned-row' });
+
+        // Col 1: Parent tag
+        const nestParentCol = nestContainer.createDiv({ cls: 'btm-field-column' });
+        nestParentCol.createEl('label', { text: 'Parent tag' });
+        const nestParentInput = new TextComponent(nestParentCol).setPlaceholder('#parent (e.g. enfermedades)');
+
+        new InlineTagSuggest(this.app, nestParentInput.inputEl, nestParentCol, (t) => {
+            nestParentInput.setValue(t);
+        });
+
+        const nestParentSuggestBtn = nestParentCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        setIcon(nestParentSuggestBtn, 'search');
+        nestParentSuggestBtn.createSpan({ text: ' Search' });
+        nestParentSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
+            nestParentInput.setValue(t);
+        }).open();
+
+        // Col 2: Child tags
+        const nestChildCol = nestContainer.createDiv({ cls: 'btm-field-column' });
+        nestChildCol.createEl('label', { text: 'Tags to nest' });
+        const nestChildInput = new TextComponent(nestChildCol).setPlaceholder('#tag1, #tag2, #tag3');
+
+        const nestSelectBtn = nestChildCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        setIcon(nestSelectBtn, 'list-filter');
+        nestSelectBtn.createSpan({ text: ' Select' });
+        nestSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+            nestChildInput.setValue(tags.map(t => '#' + t).join(', '));
+        }).open();
+
+        // Col 3: Action
+        const nestActionCol = nestContainer.createDiv({ cls: 'btm-field-column' });
+        const btnNest = nestActionCol.createEl('button', { text: 'Nest', cls: 'mod-cta btm-action-btn' });
+        btnNest.onclick = async () => {
+            const parent = nestParentInput.getValue().trim();
+            const children = nestChildInput.getValue().split(',').map(s => s.trim()).filter(s => s);
+            if (parent && children.length > 0) {
+                const parentClean = parent.replace(/^#/, '');
+                new BtmConfirmationModal(
+                    this.app,
+                    'Nest Tags',
+                    `Nest ${children.length} tag(s) under "#${parentClean}"? Each tag will be renamed to #${parentClean}/tagname.`,
+                    async () => {
+                        this.close();
+                        await this.plugin.nestTags(parent, children);
+                    }
+                ).open();
+            } else {
+                new Notice('Please provide a parent tag and at least one child tag.');
+            }
+        };
+
+        // --- Batch Rename (table) ---
+        const batchBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        batchBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Batch Rename' });
+        batchBox.createEl('p', {
+            text: 'Rename multiple tags at once. Each row is an independent old → new pair.',
+            cls: 'btm-section-desc'
+        });
+
+        const batchPairs: { from: TextComponent; to: TextComponent; row: HTMLElement }[] = [];
+
+        const batchTable = batchBox.createDiv({ cls: 'btm-batch-table' });
+        batchTable.style.cssText = 'display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;';
+
+        const addBatchRow = () => {
+            const row = batchTable.createDiv({ cls: 'btm-batch-row' });
+            row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
+
+            const fromInput = new TextComponent(row).setPlaceholder('#old-tag');
+            fromInput.inputEl.style.flex = '1';
+            new InlineTagSuggest(this.app, fromInput.inputEl, row, (tag) => {
+                fromInput.setValue(tag);
+            });
+
+            const arrow = row.createSpan({ text: '→' });
+            arrow.style.cssText = 'color: var(--text-muted); flex-shrink: 0;';
+
+            const toInput = new TextComponent(row).setPlaceholder('#new-tag');
+            toInput.inputEl.style.flex = '1';
+            new InlineTagSuggest(this.app, toInput.inputEl, row, (tag) => {
+                toInput.setValue(tag);
+            });
+
+            const removeBtn = row.createEl('button', { cls: 'btm-icon-btn' });
+            setIcon(removeBtn, 'x');
+            removeBtn.style.flexShrink = '0';
+            removeBtn.onclick = () => {
+                const idx = batchPairs.findIndex(p => p.row === row);
+                if (idx !== -1) batchPairs.splice(idx, 1);
+                row.remove();
+            };
+
+            batchPairs.push({ from: fromInput, to: toInput, row });
+        };
+
+        // Start with two empty rows
+        addBatchRow();
+        addBatchRow();
+
+        const batchControlRow = batchBox.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: center;' } });
+
+        const addRowBtn = batchControlRow.createEl('button', { text: '+ Add row', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        addRowBtn.onclick = () => addBatchRow();
+
+        const btnBatchRename = batchControlRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
+        btnBatchRename.onclick = async () => {
+            const pairs = batchPairs
+                .map(p => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
+                .filter(p => p.from && p.to);
+
+            if (pairs.length === 0) {
+                new Notice('Please fill at least one rename pair.');
+                return;
+            }
+
+            new BtmConfirmationModal(
+                this.app,
+                'Batch Rename',
+                `Apply ${pairs.length} rename pair(s) across the vault?`,
+                async () => {
+                    this.close();
+                    await this.plugin.renameTagBatch(pairs);
+                }
+            ).open();
+        };
+
+        // --- Rename from CSV Section ---
+        const csvBox = contentEl.createDiv({ cls: 'btm-section-box' });
+        csvBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Batch Rename from CSV' });
+        csvBox.createEl('p', {
+            text: 'Upload a CSV with columns old_tag,new_tag to rename many tags at once.',
+            cls: 'btm-section-desc'
+        });
+
+        const csvContainer = csvBox.createDiv({ cls: 'btm-aligned-row' });
+        const csvCol = csvContainer.createDiv({ cls: 'btm-field-column' });
+        csvCol.setAttr('style', 'grid-column: span 2;');
+
+        const csvFileInput = csvCol.createEl('input', { type: 'file' });
+        csvFileInput.accept = '.csv';
+        csvFileInput.style.display = 'none';
+
+        const csvPreview = csvCol.createDiv({ cls: 'btm-csv-preview' });
+        csvPreview.style.cssText = 'font-size: 11px; color: var(--text-muted); margin-top: 6px; max-height: 120px; overflow-y: auto;';
+
+        let parsedCsvPairs: { from: string; to: string }[] = [];
+
+        csvFileInput.addEventListener('change', () => {
+            const csvFile = csvFileInput.files?.[0];
+            if (!csvFile) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const text = e.target?.result as string;
+                parsedCsvPairs = parseCsvRenamePairs(text);
+                csvPreview.empty();
+                if (parsedCsvPairs.length === 0) {
+                    csvPreview.createSpan({ text: 'No valid pairs found in CSV.' });
+                    return;
+                }
+                csvPreview.createSpan({ text: `${parsedCsvPairs.length} pairs loaded:`, cls: 'btm-csv-count' });
+                const previewList = csvPreview.createEl('ul', { attr: { style: 'margin: 4px 0; padding-left: 16px;' } });
+                parsedCsvPairs.slice(0, 8).forEach(p => {
+                    previewList.createEl('li', { text: `#${p.from} → #${p.to}` });
+                });
+                if (parsedCsvPairs.length > 8) {
+                    previewList.createEl('li', { text: `... and ${parsedCsvPairs.length - 8} more`, cls: 'btm-more' });
+                }
+            };
+            reader.readAsText(csvFile, 'UTF-8');
+        });
+
+        const csvBtnRow = csvCol.createDiv({ attr: { style: 'display: flex; gap: 8px; margin-top: 8px;' } });
+
+        const uploadBtn = csvBtnRow.createEl('button', { text: 'Choose CSV', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const uploadIcon = uploadBtn.createSpan({ cls: 'btm-icon' });
+        setIcon(uploadIcon, 'upload');
+        uploadBtn.prepend(uploadIcon);
+        uploadBtn.onclick = () => csvFileInput.click();
+
+        const csvActionCol = csvContainer.createDiv({ cls: 'btm-field-column' });
+        const btnCsvRename = csvActionCol.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
+        btnCsvRename.onclick = async () => {
+            if (parsedCsvPairs.length === 0) {
+                new Notice('Please load a CSV file first.');
+                return;
+            }
+            new BtmConfirmationModal(
+                this.app,
+                'Batch Rename from CSV',
+                `Apply ${parsedCsvPairs.length} rename pairs across the vault?`,
+                async () => {
+                    this.close();
+                    await this.plugin.renameTagBatch(parsedCsvPairs);
+                }
+            ).open();
         };
 
         // --- Delete Tags Section ---

@@ -58,6 +58,28 @@ Rename any tag across all files, in both frontmatter and the document body.
 
 Child tags are automatically updated: renaming `#project` to `#work` will also rename `#project/active` to `#work/active` in both frontmatter and body.
 
+#### Batch Rename
+
+Rename multiple tags simultaneously using a dedicated table of old/new pairs.
+
+1. Go to the **Batch Rename** section.
+2. Add as many rows as needed.
+3. Enter the **Old Tag** and **New Tag** for each row.
+4. Click **Apply**.
+
+This is ideal for quickly reorganising small groups of tags without running multiple single rename operations.
+
+#### Batch Rename from CSV
+
+Perform large-scale tag restructuring by uploading a data file.
+
+1. Go to the **Batch Rename from CSV** section.
+2. Click **Choose CSV** and select a file with two columns: `old_tag` and `new_tag`.
+3. Review the **Preview** of the first few pairs to ensure correct loading.
+4. Click **Apply**.
+
+The CSV should not contain headers or the `#` symbol (though the plugin handles them if present).
+
 #### Tag Merging
 
 Consolidate multiple tags into a single canonical tag.
@@ -68,6 +90,17 @@ Consolidate multiple tags into a single canonical tag.
 4. Click **Merge**.
 
 Duplicate tags in the same file are automatically deduplicated after merging. Child tags are propagated (e.g. `#film/drama` becomes `#cinema/drama`).
+
+#### Nest Tags
+
+Create hierarchical structures by moving existing tags under a new parent.
+
+1. Go to the **Nest Tags** section.
+2. Enter the **Parent tag** (e.g. `#work`).
+3. Enter the **Tags to nest** (comma-separated, e.g. `#meetings, #tasks`).
+4. Click **Nest**.
+
+Each child tag will be renamed to include the parent prefix (e.g. `#work/meetings` and `#work/tasks`).
 
 #### Tag Deletion
 
