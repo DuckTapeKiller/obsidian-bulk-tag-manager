@@ -11,14 +11,14 @@
 ## Table of Contents
 
 - [Features](#colorredtextfeatures)
-    - [Dashboard Overview](#dashboard-overview)
-    - [Rename, Merge, and Delete](#rename-merge-and-delete)
-    - [Bulk Standardisation and Settings](#bulk-standardisation-and-settings)
-    - [Metadata Utilities](#metadata-utilities)
-    - [Tools](#tools)
-    - [Protected Tags](#protected-tags)
-    - [Tag Aliases](#tag-aliases)
-    - [Context Menu Integration](#context-menu-integration)
+    - [Dashboard Overview](#colorbluetextdashboard-overview)
+    - [Rename, Merge, and Delete](#colorbluetextrename-merge-and-delete)
+    - [Bulk Standardisation and Settings](#colorbluetextbulk-standardisation-and-settings)
+    - [Metadata Utilities](#colorbluetextmetadata-utilities)
+    - [Tools](#colorbluetexttools)
+    - [Protected Tags](#colorbluetextprotected-tags)
+    - [Tag Aliases](#colorbluetexttag-aliases)
+    - [Context Menu Integration](#colorbluetextcontext-menu-integration)
 - [Installation](#colorredtextinstallation)
 - [Usage](#colorredtextusage)
 - [Commands](#colorredtextcommands)
@@ -34,14 +34,14 @@
 
 ## $\color{red}{\text{Features}}$
 
-### Dashboard Overview
+### $\color{blue}{\text{Dashboard Overview}}$
 
 The plugin provides two interfaces:
 
 - **Quick Actions Modal** -- Accessed from the ribbon icon (Tags). Provides single-tag operations: rename, delete, search, tag page creation, and random note.
 - **Settings Dashboard** -- Accessed from Settings or the Command Palette. Contains the full suite of bulk operations, vault-wide statistics, and advanced tools.
 
-#### Tag Statistics
+#### $\color{orange}{\text{Tag Statistics}}$
 
 At the top of the Settings Dashboard, expand the **Overview** section to see real-time analytics:
 
@@ -60,15 +60,15 @@ At the top of the Settings Dashboard, expand the **Overview** section to see rea
 
 Clicking any statistic opens a detailed list of the relevant tags or files.
 
-#### Invalid Tag Detection
+#### $\color{orange}{\text{Invalid Tag Detection}}$
 
 If any files contain malformed YAML tag syntax (missing commas, unquoted colons, invalid formatting), an **Invalid Tags** warning block appears below the Overview. Clicking **Fix Invalid** opens a modal where you can review each issue and apply automatic or manual fixes.
 
 ---
 
-### Rename, Merge, and Delete
+### $\color{blue}{\text{Rename, Merge, and Delete}}$
 
-#### Tag Renaming
+#### $\color{orange}{\text{Tag Renaming}}$
 
 Rename any tag across all files, in both frontmatter and the document body.
 
@@ -79,7 +79,7 @@ Rename any tag across all files, in both frontmatter and the document body.
 
 Child tags are automatically updated: renaming `#project` to `#work` will also rename `#project/active` to `#work/active` in both frontmatter and body.
 
-#### Batch Rename
+#### $\color{orange}{\text{Batch Rename}}$
 
 Rename multiple tags simultaneously using a dedicated table of old/new pairs.
 
@@ -90,7 +90,7 @@ Rename multiple tags simultaneously using a dedicated table of old/new pairs.
 
 This is ideal for quickly reorganising small groups of tags without running multiple single rename operations.
 
-#### Batch Rename from CSV
+#### $\color{orange}{\text{Batch Rename from CSV}}$
 
 Perform large-scale tag restructuring by uploading a data file.
 
@@ -101,7 +101,7 @@ Perform large-scale tag restructuring by uploading a data file.
 
 The CSV should not contain headers or the `#` symbol (though the plugin handles them if present).
 
-#### Tag Merging
+#### $\color{orange}{\text{Tag Merging}}$
 
 Consolidate multiple tags into a single canonical tag.
 
@@ -112,7 +112,7 @@ Consolidate multiple tags into a single canonical tag.
 
 Duplicate tags in the same file are automatically deduplicated after merging. Child tags are propagated (e.g. `#film/drama` becomes `#cinema/drama`).
 
-#### Nest Tags
+#### $\color{orange}{\text{Nest Tags}}$
 
 Create hierarchical structures by moving existing tags under a new parent.
 
@@ -123,7 +123,7 @@ Create hierarchical structures by moving existing tags under a new parent.
 
 Each child tag will be renamed to include the parent prefix (e.g. `#work/meetings` and `#work/tasks`).
 
-#### Tag Deletion
+#### $\color{orange}{\text{Tag Deletion}}$
 
 Remove tags from all files in the current scope.
 
@@ -133,7 +133,7 @@ Remove tags from all files in the current scope.
 
 Deleting a parent tag also removes its child tags (e.g. deleting `#project` also removes `#project/active` and `#project/done`). Tags are removed from both frontmatter arrays and inline body occurrences. Trailing whitespace artifacts are automatically cleaned up.
 
-#### Pattern-Based Renaming (Regex)
+#### $\color{orange}{\text{Pattern-Based Renaming (Regex)}}$
 
 Advanced tag restructuring using Regular Expressions.
 
@@ -146,9 +146,9 @@ Regex complexity is limited to prevent catastrophic backtracking (ReDoS). Frontm
 
 ---
 
-### Bulk Standardisation and Settings
+### $\color{blue}{\text{Bulk Standardisation and Settings}}$
 
-#### Conversion Rules
+#### $\color{orange}{\text{Conversion Rules}}$
 
 Configure how tags should be formatted vault-wide:
 
@@ -160,11 +160,11 @@ Configure how tags should be formatted vault-wide:
 
 Click **Convert All** to apply these rules across all files in the current scope. A preview modal shows exactly which files and lines will be changed before you confirm.
 
-#### Bulk Case Conversion
+#### $\color{orange}{\text{Bulk Case Conversion}}$
 
 In the **Case** statistics box, two buttons allow you to convert all tags in your vault to uppercase or lowercase in a single operation, independent of the Case Strategy setting.
 
-#### Scope Filtering
+#### $\color{orange}{\text{Scope Filtering}}$
 
 Limit all operations to specific parts of your vault.
 
@@ -177,17 +177,17 @@ All statistics, conversions, and bulk operations respect the active scope filter
 
 ---
 
-### Metadata Utilities
+### $\color{blue}{\text{Metadata Utilities}}$
 
-#### Clean Front Matter Formatting
+#### $\color{orange}{\text{Clean Front Matter Formatting}}$
 
 Removes unnecessary quotes and trims whitespace from all frontmatter fields across the vault. This addresses Obsidian's tendency to add defensive quoting around property values.
 
-#### Standardise to Inline Array
+#### $\color{orange}{\text{Standardise to Inline Array}}$
 
 Converts both tag properties and wiki link properties (such as `aliases` and `cssclasses`) to the inline array format (`[value1, value2]`) across all files in the current scope.
 
-#### Standardise to YAML List
+#### $\color{orange}{\text{Standardise to YAML List}}$
 
 Converts both tag properties and wiki link properties to the multiline YAML list format across all files:
 
@@ -197,19 +197,19 @@ tags:
   - tag2
 ```
 
-#### Tag Format Conversion
+#### $\color{orange}{\text{Tag Format Conversion}}$
 
 In the **Tag Format Style** statistics box, you can convert tags specifically (without affecting wiki link properties) between YAML list and inline array formats.
 
-#### Wiki Link Format Conversion
+#### $\color{orange}{\text{Wiki Link Format Conversion}}$
 
 In the **Wiki Link Format Style** statistics box, you can convert wiki link properties specifically between YAML list and inline array formats.
 
 ---
 
-### Tools
+### $\color{blue}{\text{Tools}}$
 
-#### Hierarchy View
+#### $\color{orange}{\text{Hierarchy View}}$
 
 Visualise your tags as a collapsible, searchable tree to understand your taxonomy. Includes:
 
@@ -218,15 +218,15 @@ Visualise your tags as a collapsible, searchable tree to understand your taxonom
 - Expand All / Collapse All controls.
 - Click counts to see usage per tag node.
 
-#### Orphan Detection
+#### $\color{orange}{\text{Orphan Detection}}$
 
 Find tags used fewer times than a configurable threshold (default: 2 files). The orphan modal lists all matching tags with their usage counts and provides a **Delete All Orphans** button for bulk cleanup.
 
-#### Tag List
+#### $\color{orange}{\text{Tag List}}$
 
 Generate a markdown file (`All Tags.md`) in your vault root listing every tag and its usage count, sorted alphabetically.
 
-#### History and Undo
+#### $\color{orange}{\text{History and Undo}}$
 
 Every destructive operation (rename, merge, delete, convert, pattern rename, format conversion, property cleaning) is recorded with full file snapshots.
 
@@ -237,7 +237,7 @@ Every destructive operation (rename, merge, delete, convert, pattern rename, for
 
 ---
 
-### Protected Tags
+### $\color{blue}{\text{Protected Tags}}$
 
 Define tags that should never be modified by any rename, merge, or delete operation.
 
@@ -249,7 +249,7 @@ Protected tags are silently skipped during all bulk operations.
 
 ---
 
-### Tag Aliases
+### $\color{blue}{\text{Tag Aliases}}$
 
 Define automatic correction rules that trigger when you save a note.
 
@@ -261,7 +261,7 @@ Aliases work in both frontmatter and the document body. Child tags are also corr
 
 ---
 
-### Context Menu Integration
+### $\color{blue}{\text{Context Menu Integration}}$
 
 Right-click any tag in the **tag pane**, **editor**, **reading view**, or **metadata properties** panel to access:
 
