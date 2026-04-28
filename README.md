@@ -6,6 +6,27 @@
 
 **Bulk Tag Manager** is a comprehensive tag management utility for Obsidian. It provides a unified, professional dashboard to rename, merge, delete, clean, standardise, and organise both tags and front matter properties across your entire vault. This plugin absorbed the functionalities from [Tag Wrangler](https://github.com/pjeby/tag-wrangler), by [pjeby](https://github.com/pjeby).
 
+---
+
+## Table of Contents
+
+- [Features](#features)
+    - [Dashboard Overview](#dashboard-overview)
+    - [Rename, Merge, and Delete](#rename-merge-and-delete)
+    - [Bulk Standardisation and Settings](#bulk-standardisation-and-settings)
+    - [Metadata Utilities](#metadata-utilities)
+    - [Tools](#tools)
+    - [Protected Tags](#protected-tags)
+    - [Tag Aliases](#tag-aliases)
+    - [Context Menu Integration](#context-menu-integration)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Commands](#commands)
+- [Tips](#tips)
+- [Acknowledgements](#acknowledgements)
+
+---
+
 > [!WARNING]
 > This plugin contains a History system that allows you to undo any operation. However, if you are about to perform a destructive bulk process, it is recommended that you backup your vault before running bulk operations.
 
