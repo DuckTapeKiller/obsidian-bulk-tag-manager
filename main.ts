@@ -4803,59 +4803,11 @@ class BulkManagerSettingsDashboard {
             renameOptionsArrow.toggleClass('is-collapsed', !isRenameOptionsExpanded);
         };
 
-        // Sub-section: Single Rename
-        const renameSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
-        renameSub.createEl('h4', { text: 'Rename Tag', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
-        const renameContainer = renameSub.createDiv({ cls: 'btm-aligned-row' });
-        const findCol = renameContainer.createDiv({ cls: 'btm-field-column' });
-        findCol.createEl('label', { text: 'Find' });
-        const findInput = new TextComponent(findCol).setPlaceholder('#old-tag');
-        const findSuggestBtn = findCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
-        setIcon(findSuggestBtn, 'search');
-        findSuggestBtn.createSpan({ text: ' Search' });
-        const tagCountDisplay = findCol.createDiv({ cls: 'btm-tag-count-display', attr: { style: 'margin-top: 4px; color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
-        findSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (tag) => {
-            findInput.setValue(tag);
-            const tags = (this.plugin.app.metadataCache as any).getTags() || {};
-            const count = tags[`#${tag}`] || 0;
-            tagCountDisplay.textContent = `${count} pos`;
-        }).open();
 
-        const replaceCol = renameContainer.createDiv({ cls: 'btm-field-column' });
-        replaceCol.createEl('label', { text: 'Replace' });
-        const replaceInput = new TextComponent(replaceCol).setPlaceholder('#new-tag');
-        const renameWarning = replaceCol.createDiv({ cls: 'btm-conflict-warning', attr: { style: 'color: var(--text-warning); font-size: 11px; margin-top: 4px; display: none;' } });
-        new InlineTagSuggest(this.app, replaceInput.inputEl, replaceCol, (tag) => {
-            replaceInput.setValue(tag);
-            replaceInput.inputEl.dispatchEvent(new Event('input'));
-        });
-        replaceInput.inputEl.addEventListener('input', () => {
-            const target = replaceInput.getValue().trim().replace(/^#/, '');
-            const globalTags = (this.plugin.app.metadataCache as any).getTags();
-            renameWarning.textContent = globalTags[`#${target}`] !== undefined
-                ? `#${target} already exists. Renaming will merge these tags.`
-                : '';
-            renameWarning.style.display = renameWarning.textContent ? 'block' : 'none';
-        });
-
-        const actionCol = renameContainer.createDiv({ cls: 'btm-field-column' });
-        const btnRename = actionCol.createEl('button', { text: 'Rename', cls: 'mod-cta btm-action-btn' });
-        btnRename.onclick = async () => {
-            const oldTag = findInput.getValue();
-            const newTag = replaceInput.getValue();
-            if (!oldTag || !newTag) {
-                new Notice('Please fill both fields.');
-                return;
-            }
-            await this.plugin.renameTag(oldTag, newTag);
-            void this.updateStats();
-        };
-
-        renameOptionsContent.createEl('hr');
 
         // Sub-section: Batch Rename (table)
         const batchSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
-        batchSub.createEl('h4', { text: 'Batch Rename', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        batchSub.createEl('h4', { text: 'Rename Tags', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
         batchSub.createEl('p', {
             text: 'Rename multiple tags at once. Each row is an independent old → new pair.',
             cls: 'btm-section-desc'
@@ -4918,7 +4870,7 @@ class BulkManagerSettingsDashboard {
 
             new BtmConfirmationModal(
                 this.app,
-                'Batch Rename',
+                'Rename Tags',
                 `Apply ${pairs.length} rename pair(s) across the vault?`,
                 async () => {
                     await this.plugin.renameTagBatch(pairs);
@@ -5634,8 +5586,7 @@ class BulkManagerSettingsDashboard {
 class TagManagerModal extends Modal {
     plugin: TagLowercasePlugin;
     statsEl: HTMLElement;
-    findInput: TextComponent;
-    replaceInput: TextComponent;
+
     mergeSourcesInput: TextComponent;
     mergeTargetInput: TextComponent;
     deleteInput: TextComponent;
@@ -5686,64 +5637,7 @@ class TagManagerModal extends Modal {
             }
         };
 
-        // --- Rename Section ---
-        const renameBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        renameBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Rename Tag' });
 
-        const renameContainer = renameBox.createDiv({ cls: 'btm-aligned-row' });
-
-        // Col 1: Find
-        const findCol = renameContainer.createDiv({ cls: 'btm-field-column' });
-        findCol.createEl('label', { text: 'Find' });
-        this.findInput = new TextComponent(findCol).setPlaceholder('#old-tag');
-        const findSuggestBtn = findCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
-        setIcon(findSuggestBtn, 'search');
-        findSuggestBtn.createSpan({ text: ' Search' });
-        const tagCountDisplay = findCol.createDiv({ cls: 'btm-tag-count-display', attr: { style: 'margin-top: 4px; color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
-
-        findSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
-            this.findInput.setValue(t);
-            const tags = (this.plugin.app.metadataCache as any).getTags() || {};
-            const count = tags['#' + t] || 0;
-            tagCountDisplay.textContent = `${count} pos`;
-        }).open();
-
-        // Col 2: Replace
-        const replaceCol = renameContainer.createDiv({ cls: 'btm-field-column' });
-        replaceCol.createEl('label', { text: 'Replace' });
-        this.replaceInput = new TextComponent(replaceCol).setPlaceholder('#new-tag');
-        const renameWarning = replaceCol.createDiv({ cls: 'btm-conflict-warning', attr: { style: 'color: var(--text-warning); font-size: 11px; margin-top: 4px; display: none;' } });
-
-        new InlineTagSuggest(this.app, this.replaceInput.inputEl, replaceCol, (t) => {
-            this.replaceInput.setValue(t);
-            this.replaceInput.inputEl.dispatchEvent(new Event('input'));
-        });
-
-        this.replaceInput.inputEl.addEventListener('input', () => {
-            const target = this.replaceInput.getValue().trim();
-            const cleanTarget = target.replace(/^#/, '');
-            const globalTags = (this.plugin.app.metadataCache as any).getTags();
-            if (globalTags['#' + cleanTarget] !== undefined) {
-                renameWarning.textContent = `⚠️ #${cleanTarget} already exists. Renaming will merge these tags.`;
-                renameWarning.style.display = 'block';
-            } else {
-                renameWarning.style.display = 'none';
-            }
-        });
-
-        // Col 3: Action
-        const actionCol = renameContainer.createDiv({ cls: 'btm-field-column' });
-        const btnRename = actionCol.createEl('button', { text: 'Rename', cls: 'mod-cta btm-action-btn' });
-        btnRename.onclick = async () => {
-            const oldT = this.findInput.getValue();
-            const newT = this.replaceInput.getValue();
-            if (oldT && newT) {
-                this.close();
-                await this.plugin.renameTag(oldT, newT);
-            } else {
-                new Notice('Please fill both fields.');
-            }
-        };
 
         // --- Merge Section ---
         const mergeBox = contentEl.createDiv({ cls: 'btm-section-box' });
@@ -5872,7 +5766,7 @@ class TagManagerModal extends Modal {
 
         // --- Batch Rename (table) ---
         const batchBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        batchBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Batch Rename' });
+        batchBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Rename Tags' });
         batchBox.createEl('p', {
             text: 'Rename multiple tags at once. Each row is an independent old → new pair.',
             cls: 'btm-section-desc'
@@ -5936,7 +5830,7 @@ class TagManagerModal extends Modal {
 
             new BtmConfirmationModal(
                 this.app,
-                'Batch Rename',
+                'Rename Tags',
                 `Apply ${pairs.length} rename pair(s) across the vault?`,
                 async () => {
                     this.close();
