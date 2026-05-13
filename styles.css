@@ -335,6 +335,11 @@
     max-height: 80vh;
 }
 
+.btm-preview-warning {
+    color: var(--text-warning);
+    font-size: var(--font-ui-smaller);
+}
+
 .btm-preview-list {
     max-height: 400px;
     overflow-y: auto;
@@ -407,6 +412,14 @@
     max-width: 500px;
 }
 
+.btm-history-clarification {
+    color: var(--text-muted);
+}
+
+.btm-history-warning {
+    color: var(--text-warning);
+}
+
 .btm-history-list {
     max-height: 400px;
     overflow-y: auto;
@@ -437,6 +450,65 @@
 .btm-revert-btn {
     align-self: flex-start;
     margin-top: 8px;
+}
+
+.btm-inline-count {
+    margin-left: 10px;
+    font-size: 12px;
+}
+
+.btm-tags-list {
+    margin-top: 8px;
+}
+
+.btm-modal-wide {
+    width: 80vw;
+    max-width: 800px;
+}
+
+.btm-file-list {
+    max-height: 60vh;
+    overflow-y: auto;
+    margin-top: 20px;
+}
+
+.btm-file-item-error {
+    border-left: 4px solid var(--text-error);
+    padding: 10px;
+    margin-bottom: 10px;
+    background: var(--background-secondary-alt);
+    border-radius: 4px;
+    font-size: var(--font-ui-small);
+}
+
+.btm-file-item.is-fixed {
+    opacity: 0.5;
+}
+
+.btm-file-link {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 5px;
+    color: var(--text-accent);
+    text-decoration: none;
+}
+
+.btm-file-link:hover {
+    text-decoration: underline;
+}
+
+.btm-file-error-text {
+    color: var(--text-error);
+}
+
+.btm-button-row-start {
+    justify-content: flex-start;
+    margin-top: 10px;
+}
+
+.btm-fix-syntax-btn {
+    padding: 2px 10px;
+    font-size: 11px;
 }
 
 /* Hierarchy Modal */
@@ -950,4 +1022,54 @@
 .btm-action-btn {
     margin-top: 24px;
     height: 30px;
+}
+
+.btm-flex-1 {
+    flex: 1;
+}
+
+.btm-shrink-0 {
+    flex-shrink: 0;
+}
+
+.btm-full-width-input {
+    width: 100%;
+}
+
+.btm-scroll-preview,
+.btm-csv-preview {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.btm-batch-table {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.btm-batch-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.btm-batch-arrow {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.btm-warning-link {
+    display: block;
+    margin-top: 4px;
+}
+
+.btm-conflict-warning {
+    color: var(--text-warning);
+    font-size: 11px;
+    margin-top: 4px;
 }

@@ -1,9 +1,3 @@
-[![GitHub Repo stars](https://img.shields.io/github/stars/DuckTapeKiller/obsidian-bulk-tag-manager?style=flat&logo=obsidian&color=%2327ae60)](https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/DuckTapeKiller/obsidian-bulk-tag-manager?logo=obsidian&color=%2327ae60)](https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/issues)
-[![GitHub closed issues](https://img.shields.io/github/issues-closed/DuckTapeKiller/obsidian-bulk-tag-manager?logo=obsidian&color=%2327ae60)](https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/issues?q=is%3Aissue+is%3Aclosed)
-[![GitHub manifest version](https://img.shields.io/github/manifest-json/v/DuckTapeKiller/obsidian-bulk-tag-manager?logo=obsidian&color=%2327ae60)](https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/blob/main/manifest.json)
-[![Downloads](https://img.shields.io/github/downloads/DuckTapeKiller/obsidian-bulk-tag-manager/total?logo=obsidian&color=%2327ae60)](https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/releases)
-
 # Bulk Tag Manager
 
 ![Bulk Tag Manager Art](https://github.com/user-attachments/assets/bc234f8a-a52c-41d7-a563-0c4676600dc7)

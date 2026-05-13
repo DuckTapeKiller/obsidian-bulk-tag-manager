@@ -1,4 +1,4 @@
-import { App, Component, DropdownComponent, Keymap, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SuggestModal, TFile, TFolder, TextComponent, WorkspaceLeaf, parseFrontMatterAliases, setIcon, setTooltip } from 'obsidian';
+import { App, Component, DropdownComponent, Keymap, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SuggestModal, TFile, TFolder, TextComponent, parseFrontMatterAliases, setIcon, setTooltip } from 'obsidian';
 
 // --- Interfaces ---
 
@@ -171,11 +171,19 @@ function registerDelegatedDomEvent(
     options?: AddEventListenerOptions | boolean,
 ) {
     const listener = (event: Event) => {
-        if (!(event.target instanceof Element)) return;
-        const targetEl = event.target.closest(selector);
-        if (targetEl instanceof HTMLElement) {
-            handler(event, targetEl);
-        }
+        const rawTarget = event.target;
+        if (!rawTarget) return;
+
+        const targetNode = rawTarget as unknown as Node;
+        if (!targetNode.instanceOf(Element)) return;
+
+        const closest = (rawTarget as Element).closest(selector);
+        if (!closest) return;
+
+        const closestNode = closest as unknown as Node;
+        if (!closestNode.instanceOf(HTMLElement)) return;
+
+        handler(event, closest as HTMLElement);
     };
     component.registerDomEvent(target as any, eventName as any, listener as any, options);
 }
@@ -191,7 +199,7 @@ function menuForEvent(event: MouseEvent): Menu {
 
     const menu = new Menu();
     (event as MouseEvent & { obsidian_contextmenu?: Menu }).obsidian_contextmenu = menu;
-    setTimeout(() => menu.showAtPosition({ x: event.pageX, y: event.pageY }), 0);
+    activeWindow.setTimeout(() => menu.showAtPosition({ x: event.pageX, y: event.pageY }), 0);
     return menu;
 }
 
@@ -239,7 +247,7 @@ class InlineTagSuggest {
         inputEl.addEventListener('input', () => this.updateSuggestions());
         inputEl.addEventListener('blur', () => {
             // Delay to allow clicking on an item
-            setTimeout(() => this.hide(), 200);
+            this.inputEl.win.setTimeout(() => this.hide(), 200);
         });
         inputEl.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') this.hide();
@@ -294,7 +302,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         this.addCommand({
             id: 'open-tag-manager',
-            name: 'Open Bulk Tag Manager Settings',
+            name: 'Open settings',
             callback: () => this.openPluginSettings()
         });
 
@@ -348,12 +356,12 @@ export default class TagLowercasePlugin extends Plugin {
 
     onunload() {
         for (const timer of this.aliasDebounceTimers.values()) {
-            clearTimeout(timer);
+            activeWindow.clearTimeout(timer);
         }
         this.aliasDebounceTimers.clear();
     }
 
-    private aliasDebounceTimers: Map<string, NodeJS.Timeout> = new Map();
+    private aliasDebounceTimers: Map<string, ReturnType<Window['setTimeout']>> = new Map();
     private isBulkOperationInProgress = false;
 
     openPluginSettings() {
@@ -377,9 +385,9 @@ export default class TagLowercasePlugin extends Plugin {
 
     applyAliasesDebounced(file: TFile) {
         const existingTimer = this.aliasDebounceTimers.get(file.path);
-        if (existingTimer) clearTimeout(existingTimer);
+        if (existingTimer) activeWindow.clearTimeout(existingTimer);
         
-        const timer = setTimeout(() => {
+        const timer = activeWindow.setTimeout(() => {
             this.applyAliases(file);
             this.aliasDebounceTimers.delete(file.path);
         }, 1000);
@@ -417,7 +425,7 @@ export default class TagLowercasePlugin extends Plugin {
             }),
         );
 
-        registerDelegatedDomEvent(this, document, 'contextmenu', '.tag-pane-tag', (event, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument, 'contextmenu', '.tag-pane-tag', (event, targetEl) => {
             const mouseEvent = event as MouseEvent;
             const tagText = targetEl.querySelector('.tag-pane-tag-text, .tree-item-inner-text')?.textContent?.trim();
             if (!tagText) return;
@@ -426,11 +434,11 @@ export default class TagLowercasePlugin extends Plugin {
             this.setupTagWranglerMenu(menuForEvent(mouseEvent), tagText, { isHierarchy });
         }, { capture: true });
 
-        registerDelegatedDomEvent(this, document, 'pointerdown', '.tag-pane-tag', (_, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument, 'pointerdown', '.tag-pane-tag', (_, targetEl) => {
             targetEl.draggable = true;
         }, { capture: true });
 
-        registerDelegatedDomEvent(this, document, 'dragstart', '.tag-pane-tag', (event, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument, 'dragstart', '.tag-pane-tag', (event, targetEl) => {
             const dragEvent = event as DragEvent;
             const tagText = targetEl.querySelector('.tag-pane-tag-text, .tree-item-inner-text')?.textContent?.trim();
             if (!dragEvent.dataTransfer || !tagText) return;
@@ -466,20 +474,28 @@ export default class TagLowercasePlugin extends Plugin {
             dragManager?.setAction?.(`Rename to ${destination}`);
         };
 
-        registerDelegatedDomEvent(this, document.body, 'dragover', '.tag-pane-tag.tree-item-self', (event, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument.body, 'dragover', '.tag-pane-tag.tree-item-self', (event, targetEl) => {
             dropHandler(event, targetEl);
         }, { capture: true });
 
-        registerDelegatedDomEvent(this, document.body, 'dragenter', '.tag-pane-tag.tree-item-self', (event, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument.body, 'dragenter', '.tag-pane-tag.tree-item-self', (event, targetEl) => {
             dropHandler(event, targetEl);
         }, { capture: true });
 
-        this.registerDomEvent(window, 'drop', (event) => {
-            if (!(event.target instanceof Element)) return;
-            const targetEl = event.target.closest('.tag-pane-tag.tree-item-self');
-            if (targetEl instanceof HTMLElement) {
-                dropHandler(event, targetEl, true);
-            }
+        this.registerDomEvent(activeWindow, 'drop', (event) => {
+            const rawTarget = event.target;
+            if (!rawTarget) return;
+
+            const targetNode = rawTarget as unknown as Node;
+            if (!targetNode.instanceOf(Element)) return;
+
+            const closest = (rawTarget as Element).closest('.tag-pane-tag.tree-item-self');
+            if (!closest) return;
+
+            const closestNode = closest as unknown as Node;
+            if (!closestNode.instanceOf(HTMLElement)) return;
+
+            dropHandler(event, closest as HTMLElement, true);
         }, { capture: true });
 
         (this.app.workspace as any).registerHoverLinkSource?.(TAG_HOVER_SOURCE, { display: 'Tags View', defaultMod: true });
@@ -863,7 +879,6 @@ export default class TagLowercasePlugin extends Plugin {
             }
             this.settings.operationHistory = toKeep;
             await this.saveSettings();
-            console.log(`BTM: Purged ${toDelete.length} expired history records.`);
         }
     }
 
@@ -1012,7 +1027,7 @@ export default class TagLowercasePlugin extends Plugin {
                         // Throttle: Yield to event loop every 50 files based on attempts
                         if (attemptCount % 50 === 0) {
                             progressModal.update(attemptCount);
-                            await new Promise(resolve => setTimeout(resolve, 5)); 
+                            await new Promise(resolve => activeWindow.setTimeout(resolve, 5)); 
                         } else {
                             progressModal.update(attemptCount);
                         }
@@ -3308,7 +3323,7 @@ class ProgressModal extends Modal {
     update(current: number) {
         const percent = Math.round((current / this.total) * 100);
         const fill = this.progressBar.querySelector('.btm-progress-fill') as HTMLElement;
-        if (fill) fill.style.width = `${percent}%`;
+        if (fill) fill.setCssProps({ width: `${percent}%` });
         this.progressText.textContent = `${current} / ${this.total} (${percent}%)`;
     }
 
@@ -3338,10 +3353,10 @@ class PreviewModal extends Modal {
         new Setting(contentEl).setName('Preview Changes').setHeading();
         contentEl.createEl('p', { text: `${this.preview.affectedFiles.length} files will be modified (${this.preview.totalChanges} changes)` });
         
-        const warning = contentEl.createEl('p', { cls: 'btm-preview-warning' });
-        warning.setText('Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.');
-        warning.style.color = 'var(--text-warning)';
-        warning.style.fontSize = 'var(--font-ui-smaller)';
+        contentEl.createEl('p', {
+            cls: 'btm-preview-warning',
+            text: 'Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.',
+        });
 
         const listEl = contentEl.createDiv({ cls: 'btm-preview-list' });
 
@@ -3413,10 +3428,10 @@ class HistoryModal extends Modal {
         new Setting(contentEl).setName('Operation History').setHeading();
         
         if (this.plugin.settings.historyExpirationDays > 0) {
-            contentEl.createEl('p', { 
+            contentEl.createEl('p', {
                 text: `History is automatically cleared every ${this.plugin.settings.historyExpirationDays} days.`,
                 cls: 'btm-history-clarification'
-            }).style.color = 'var(--text-muted)';
+            });
         }
 
         if (this.plugin.settings.operationHistory.length === 0) {
@@ -3445,10 +3460,10 @@ class HistoryModal extends Modal {
 
             if (op === this.plugin.settings.operationHistory[0]) {
                 if ((op as any).nonRevertible) {
-                    itemEl.createDiv({ 
-                        cls: 'btm-history-warning', 
-                        text: '⚠ Snapshots omitted due to size - cannot undo.' 
-                    }).style.color = 'var(--text-warning)';
+                    itemEl.createDiv({
+                        cls: 'btm-history-warning',
+                        text: '⚠ Snapshots omitted due to size - cannot undo.',
+                    });
                 } else {
                     const revertBtn = itemEl.createEl('button', { text: 'Undo', cls: 'btm-revert-btn' });
                     revertBtn.onclick = async () => {
@@ -3726,7 +3741,7 @@ class InvalidTagsModal extends Modal {
             linkEl.onclick = (e) => {
                 e.preventDefault();
                 this.close();
-                this.app.workspace.openLinkText(item.path, '', false);
+                void this.app.workspace.openLinkText(item.path, '', false);
             };
 
             const issuesEl = itemEl.createDiv({ cls: 'btm-invalid-issues' });
@@ -3798,7 +3813,7 @@ class InvalidTagsModal extends Modal {
                 const goBtn = actionRow.createEl('button', { text: 'Go to note', cls: 'btm-small-btn' });
                 goBtn.onclick = () => {
                     this.close();
-                    this.app.workspace.openLinkText(item.path, '', false);
+                    void this.app.workspace.openLinkText(item.path, '', false);
                 };
 
                 const ignoreBtn = actionRow.createEl('button', { text: 'Ignore', cls: 'btm-small-btn' });
@@ -3865,7 +3880,7 @@ class EmptyTagsModal extends Modal {
             linkEl.onclick = (e) => {
                 e.preventDefault();
                 this.close();
-                this.app.workspace.openLinkText(file.path, '', false);
+                void this.app.workspace.openLinkText(file.path, '', false);
             };
         }
 
@@ -3915,15 +3930,12 @@ class InlineTagsModal extends Modal {
             });
             titleEl.onclick = () => {
                 this.close();
-                this.app.workspace.openLinkText(item.file.path, '', false);
+                void this.app.workspace.openLinkText(item.file.path, '', false);
             };
 
-            const countSpan = headerEl.createSpan({ text: ` — ${item.count} inline tags`, cls: 'btm-highlight' });
-            countSpan.style.marginLeft = '10px';
-            countSpan.style.fontSize = '12px';
+            headerEl.createSpan({ text: ` — ${item.count} inline tags`, cls: 'btm-highlight btm-inline-count' });
 
-            const tagsEl = itemEl.createDiv({ cls: 'btm-metric-details' });
-            tagsEl.style.marginTop = '8px';
+            const tagsEl = itemEl.createDiv({ cls: 'btm-metric-details btm-tags-list' });
             for (const tag of item.tags) {
                 tagsEl.createSpan({ text: '#' + tag });
             }
@@ -3973,15 +3985,12 @@ class NestedFilesModal extends Modal {
             });
             titleEl.onclick = () => {
                 this.close();
-                this.app.workspace.openLinkText(item.file.path, '', false);
+                void this.app.workspace.openLinkText(item.file.path, '', false);
             };
 
-            const countSpan = headerEl.createSpan({ text: ` — ${item.count} nested tags`, cls: 'btm-highlight' });
-            countSpan.style.marginLeft = '10px';
-            countSpan.style.fontSize = '12px';
+            headerEl.createSpan({ text: ` — ${item.count} nested tags`, cls: 'btm-highlight btm-inline-count' });
 
-            const tagsEl = itemEl.createDiv({ cls: 'btm-metric-details' });
-            tagsEl.style.marginTop = '8px';
+            const tagsEl = itemEl.createDiv({ cls: 'btm-metric-details btm-tags-list' });
             for (const tag of item.tags) {
                 tagsEl.createSpan({ text: '#' + tag });
             }
@@ -4075,7 +4084,7 @@ class SimpleFileListModal extends Modal {
             itemEl.createEl('a', { text: file.path, cls: 'btm-file-link' })
                 .onclick = () => {
                     this.close();
-                    this.app.workspace.openLinkText(file.path, '', false);
+                    void this.app.workspace.openLinkText(file.path, '', false);
                 };
         }
 
@@ -4106,8 +4115,7 @@ class BtmErrorReportModal extends Modal {
         contentEl.addClass('btm-file-list-modal');
         
         // Ensure modal is large enough and styled
-        this.modalEl.style.width = '80vw';
-        this.modalEl.style.maxWidth = '800px';
+        this.modalEl.addClass('btm-modal-wide');
 
         new Setting(contentEl)
             .setName(this.title)
@@ -4115,49 +4123,33 @@ class BtmErrorReportModal extends Modal {
             .setHeading();
 
         const listEl = contentEl.createDiv({ cls: 'btm-file-list' });
-        listEl.style.maxHeight = '60vh';
-        listEl.style.overflowY = 'auto';
-        listEl.style.marginTop = '20px';
 
         if (this.errors.length === 0) {
             listEl.createEl('p', { text: 'No errors to display.', cls: 'btm-loading' });
         } else {
             for (const err of this.errors) {
-                const itemEl = listEl.createDiv({ cls: 'btm-file-item' });
-                itemEl.style.borderLeft = '4px solid var(--text-error)';
-                itemEl.style.padding = '10px';
-                itemEl.style.marginBottom = '10px';
-                itemEl.style.background = 'var(--background-secondary-alt)';
-                itemEl.style.borderRadius = '4px';
+                const itemEl = listEl.createDiv({ cls: 'btm-file-item btm-file-item-error' });
 
                 const pathLink = itemEl.createEl('a', { text: err.path, cls: 'btm-file-link' });
-                pathLink.style.display = 'block';
-                pathLink.style.fontWeight = 'bold';
-                pathLink.style.marginBottom = '5px';
                 pathLink.onclick = () => {
                     this.close();
-                    this.app.workspace.openLinkText(err.path, '', false);
+                    void this.app.workspace.openLinkText(err.path, '', false);
                 };
 
-                itemEl.createDiv({ text: `Error: ${err.message}` }).style.color = 'var(--text-error)';
-                itemEl.style.fontSize = 'var(--font-ui-small)';
+                itemEl.createDiv({ text: `Error: ${err.message}`, cls: 'btm-file-error-text' });
 
                 // Add Fix button if it's a mapping error
                 const msg = err.message.toLowerCase();
                 if (msg.includes('mapping') || msg.includes('colon') || msg.includes('syntax')) {
-                    const actionRow = itemEl.createDiv({ cls: 'btm-button-row' });
-                    actionRow.style.justifyContent = 'flex-start';
-                    actionRow.style.marginTop = '10px';
+                    const actionRow = itemEl.createDiv({ cls: 'btm-button-row btm-button-row-start' });
 
-                    const fixBtn = actionRow.createEl('button', { text: 'Fix Syntax', cls: 'mod-cta' });
-                    fixBtn.style.padding = '2px 10px';
-                    fixBtn.style.fontSize = '11px';
+                    const fixBtn = actionRow.createEl('button', { text: 'Fix Syntax', cls: 'mod-cta btm-fix-syntax-btn' });
                     
                     fixBtn.onclick = async () => {
                         const file = this.app.vault.getAbstractFileByPath(err.path);
                         if (file instanceof TFile) {
                             await this.plugin.fixInvalidMappingError(file);
-                            itemEl.style.opacity = '0.5';
+                            itemEl.addClass('is-fixed');
                             fixBtn.disabled = true;
                             fixBtn.setText('Fixed');
                             new Notice(`Fixed YAML syntax in: ${file.basename}`);
@@ -4489,7 +4481,7 @@ class TagInteractionHandler extends Component {
     onload() {
         const { selector, container, hoverSource, toTag } = this.opts;
 
-        registerDelegatedDomEvent(this, document, 'mouseover', selector, (event, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument, 'mouseover', selector, (event, targetEl) => {
             const tagName = toTag(targetEl);
             const tagPage = tagName ? this.plugin.tagPage(tagName) : undefined;
             if (!tagPage) return;
@@ -4504,7 +4496,7 @@ class TagInteractionHandler extends Component {
         });
 
         if (this.opts.enableContextMenu) {
-            registerDelegatedDomEvent(this, document, 'contextmenu', selector, (event, targetEl) => {
+            registerDelegatedDomEvent(this, activeDocument, 'contextmenu', selector, (event, targetEl) => {
                 const tagName = toTag(targetEl);
                 if (!tagName) return;
 
@@ -4544,12 +4536,12 @@ class TagInteractionHandler extends Component {
                     };
                 }
 
-                setTimeout(restore, 0);
+                mouseEvent.win.setTimeout(restore, 0);
             }, { capture: !!this.opts.mergeMenu });
         }
 
         if (hoverSource === 'preview') {
-            registerDelegatedDomEvent(this, document, 'dragstart', selector, (event, targetEl) => {
+            registerDelegatedDomEvent(this, activeDocument, 'dragstart', selector, (event, targetEl) => {
                 const dragEvent = event as DragEvent;
                 const tagName = toTag(targetEl);
                 if (!dragEvent.dataTransfer || !tagName) return;
@@ -4564,7 +4556,7 @@ class TagInteractionHandler extends Component {
             });
         }
 
-        registerDelegatedDomEvent(this, document, hoverSource === 'editor' ? 'mousedown' : 'click', selector, (event, targetEl) => {
+        registerDelegatedDomEvent(this, activeDocument, hoverSource === 'editor' ? 'mousedown' : 'click', selector, (event, targetEl) => {
             const mouseEvent = event as MouseEvent;
             const isMod = !!Keymap.isModEvent(mouseEvent);
             if (!isMod && !mouseEvent.altKey) return;
@@ -4824,30 +4816,26 @@ class BulkManagerSettingsDashboard {
         const batchPairs: { from: TextComponent; to: TextComponent; row: HTMLElement }[] = [];
 
         const batchTable = batchSub.createDiv({ cls: 'btm-batch-table' });
-        batchTable.style.cssText = 'display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;';
 
         const addBatchRow = () => {
             const row = batchTable.createDiv({ cls: 'btm-batch-row' });
-            row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
 
             const fromInput = new TextComponent(row).setPlaceholder('#old-tag');
-            fromInput.inputEl.style.flex = '1';
+            fromInput.inputEl.addClass('btm-flex-1');
             new InlineTagSuggest(this.app, fromInput.inputEl, row, (tag) => {
                 fromInput.setValue(tag);
             });
 
-            const arrow = row.createSpan({ text: '→' });
-            arrow.style.cssText = 'color: var(--text-muted); flex-shrink: 0;';
+            row.createSpan({ text: '→', cls: 'btm-batch-arrow' });
 
             const toInput = new TextComponent(row).setPlaceholder('#new-tag');
-            toInput.inputEl.style.flex = '1';
+            toInput.inputEl.addClass('btm-flex-1');
             new InlineTagSuggest(this.app, toInput.inputEl, row, (tag) => {
                 toInput.setValue(tag);
             });
 
-            const removeBtn = row.createEl('button', { cls: 'btm-icon-btn' });
+            const removeBtn = row.createEl('button', { cls: 'btm-icon-btn btm-shrink-0' });
             setIcon(removeBtn, 'x');
-            removeBtn.style.flexShrink = '0';
             removeBtn.onclick = () => {
                 const idx = batchPairs.findIndex(p => p.row === row);
                 if (idx !== -1) batchPairs.splice(idx, 1);
@@ -4907,10 +4895,9 @@ class BulkManagerSettingsDashboard {
 
         const csvFileInput = csvCol.createEl('input', { type: 'file' });
         csvFileInput.accept = '.csv';
-        csvFileInput.style.display = 'none';
+        csvFileInput.hide();
 
         const csvPreview = csvCol.createDiv({ cls: 'btm-csv-preview' });
-        csvPreview.style.cssText = 'font-size: 11px; color: var(--text-muted); margin-top: 6px; max-height: 120px; overflow-y: auto;';
 
         let parsedCsvPairs: { from: string; to: string }[] = [];
 
@@ -5068,7 +5055,6 @@ class BulkManagerSettingsDashboard {
         deleteCol.createEl('label', { text: 'Tags to Delete (comma separated)' });
         const deleteInput = new TextComponent(deleteCol).setPlaceholder('#bad-tag, #unused');
         deleteInput.inputEl.addClass('btm-full-width-input');
-        deleteInput.inputEl.style.width = '100%';
         const delBtnRow = deleteCol.createDiv({ attr: { style: 'display: flex; gap: 8px;' } });
         const delSelectBtn = delBtnRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(delSelectBtn, 'list-filter');
@@ -5114,10 +5100,9 @@ class BulkManagerSettingsDashboard {
 
         const deleteListFileInput = deleteListSub.createEl('input', { type: 'file' });
         deleteListFileInput.accept = '.txt,.csv';
-        deleteListFileInput.style.display = 'none';
+        deleteListFileInput.hide();
 
-        const deleteListPreview = deleteListSub.createDiv();
-        deleteListPreview.style.cssText = 'font-size: 11px; color: var(--text-muted); margin-top: 6px; max-height: 120px; overflow-y: auto;';
+        const deleteListPreview = deleteListSub.createDiv({ cls: 'btm-scroll-preview' });
 
         let parsedDeleteTags: string[] = [];
 
@@ -5151,8 +5136,7 @@ class BulkManagerSettingsDashboard {
         setIcon(chooseDeleteListBtn, 'upload');
         chooseDeleteListBtn.onclick = () => deleteListFileInput.click();
 
-        const applyDeleteListBtn = deleteListBtnRow.createEl('button', { text: 'Delete All', cls: 'mod-cta btm-action-btn' });
-        applyDeleteListBtn.style.background = 'var(--color-red)';
+        const applyDeleteListBtn = deleteListBtnRow.createEl('button', { text: 'Delete All', cls: 'mod-warning btm-action-btn' });
         applyDeleteListBtn.onclick = async () => {
             if (parsedDeleteTags.length === 0) {
                 new Notice('Please load a file first.');
@@ -5372,7 +5356,7 @@ class BulkManagerSettingsDashboard {
     createProgressBar(container: HTMLElement, value: number) {
         const bar = container.createDiv({ cls: 'btm-progress-bar-mini' });
         const fill = bar.createDiv({ cls: 'btm-progress-fill-mini' });
-        fill.style.width = `${value}%`;
+        fill.setCssProps({ width: `${value}%` });
         if (value < 50) fill.addClass('btm-progress-low');
         else if (value < 80) fill.addClass('btm-progress-medium');
         else fill.addClass('btm-progress-high');
@@ -5460,8 +5444,6 @@ class BulkManagerSettingsDashboard {
                 text: `${stats.quotedFrontmatterCount} notes with quoted properties`,
                 cls: 'btm-stat-link btm-warning-link',
             });
-            fmLink.style.display = 'block';
-            fmLink.style.marginTop = '4px';
             fmLink.onclick = () => new SimpleFileListModal(this.app, 'Notes with Quoted Properties', stats.quotedFrontmatterFiles).open();
         }
 
@@ -5631,11 +5613,11 @@ class BulkManagerSettingsDashboard {
         this.invalidContentEl.empty();
         const invalidFiles = await this.plugin.findInvalidTagFormats();
         if (!invalidFiles.length) {
-            this.invalidBlock.style.display = 'none';
+            this.invalidBlock.hide();
             return;
         }
 
-        this.invalidBlock.style.display = 'block';
+        this.invalidBlock.show();
         const warningRow = this.invalidContentEl.createDiv({ cls: 'btm-invalid-warning' });
         const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
         setIcon(iconEl, 'alert-triangle');
@@ -5739,7 +5721,8 @@ class TagManagerModal extends Modal {
         const targetCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         targetCol.createEl('label', { text: 'Target' });
         this.mergeTargetInput = new TextComponent(targetCol).setPlaceholder('#merged');
-        const mergeWarning = targetCol.createDiv({ cls: 'btm-conflict-warning', attr: { style: 'color: var(--text-warning); font-size: 11px; margin-top: 4px; display: none;' } });
+        const mergeWarning = targetCol.createDiv({ cls: 'btm-conflict-warning' });
+        mergeWarning.hide();
 
         new InlineTagSuggest(this.app, this.mergeTargetInput.inputEl, targetCol, (t) => {
             this.mergeTargetInput.setValue(t);
@@ -5752,9 +5735,9 @@ class TagManagerModal extends Modal {
             const globalTags = (this.plugin.app.metadataCache as any).getTags();
             if (globalTags['#' + cleanTarget] !== undefined) {
                 mergeWarning.textContent = `⚠️ #${cleanTarget} already exists. This will merge into the existing tag.`;
-                mergeWarning.style.display = 'block';
+                mergeWarning.show();
             } else {
-                mergeWarning.style.display = 'none';
+                mergeWarning.hide();
             }
         });
 
@@ -5854,30 +5837,26 @@ class TagManagerModal extends Modal {
         const batchPairs: { from: TextComponent; to: TextComponent; row: HTMLElement }[] = [];
 
         const batchTable = batchBox.createDiv({ cls: 'btm-batch-table' });
-        batchTable.style.cssText = 'display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;';
 
         const addBatchRow = () => {
             const row = batchTable.createDiv({ cls: 'btm-batch-row' });
-            row.style.cssText = 'display: flex; gap: 6px; align-items: center;';
 
             const fromInput = new TextComponent(row).setPlaceholder('#old-tag');
-            fromInput.inputEl.style.flex = '1';
+            fromInput.inputEl.addClass('btm-flex-1');
             new InlineTagSuggest(this.app, fromInput.inputEl, row, (tag) => {
                 fromInput.setValue(tag);
             });
 
-            const arrow = row.createSpan({ text: '→' });
-            arrow.style.cssText = 'color: var(--text-muted); flex-shrink: 0;';
+            row.createSpan({ text: '→', cls: 'btm-batch-arrow' });
 
             const toInput = new TextComponent(row).setPlaceholder('#new-tag');
-            toInput.inputEl.style.flex = '1';
+            toInput.inputEl.addClass('btm-flex-1');
             new InlineTagSuggest(this.app, toInput.inputEl, row, (tag) => {
                 toInput.setValue(tag);
             });
 
-            const removeBtn = row.createEl('button', { cls: 'btm-icon-btn' });
+            const removeBtn = row.createEl('button', { cls: 'btm-icon-btn btm-shrink-0' });
             setIcon(removeBtn, 'x');
-            removeBtn.style.flexShrink = '0';
             removeBtn.onclick = () => {
                 const idx = batchPairs.findIndex(p => p.row === row);
                 if (idx !== -1) batchPairs.splice(idx, 1);
@@ -5932,10 +5911,9 @@ class TagManagerModal extends Modal {
 
         const csvFileInput = csvCol.createEl('input', { type: 'file' });
         csvFileInput.accept = '.csv';
-        csvFileInput.style.display = 'none';
+        csvFileInput.hide();
 
         const csvPreview = csvCol.createDiv({ cls: 'btm-csv-preview' });
-        csvPreview.style.cssText = 'font-size: 11px; color: var(--text-muted); margin-top: 6px; max-height: 120px; overflow-y: auto;';
 
         let parsedCsvPairs: { from: string; to: string }[] = [];
 
@@ -6003,8 +5981,6 @@ class TagManagerModal extends Modal {
         deleteCol.createEl('label', { text: 'Tags to Delete (comma separated)' });
         this.deleteInput = new TextComponent(deleteCol).setPlaceholder('#bad-tag, #unused');
         this.deleteInput.inputEl.addClass('btm-full-width-input');
-        // We handle width in CSS or rely on flex, but for now remove inline style if possible, or keep 100% if needed for layout.
-        this.deleteInput.inputEl.style.width = '100%';
 
         const delBtnRow = deleteCol.createDiv({ attr: { style: 'display: flex; gap: 8px;' } });
         const delSelectBtn = delBtnRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
@@ -6051,10 +6027,9 @@ class TagManagerModal extends Modal {
 
         const deleteListFileInput2 = deleteListBox.createEl('input', { type: 'file' });
         deleteListFileInput2.accept = '.txt,.csv';
-        deleteListFileInput2.style.display = 'none';
+        deleteListFileInput2.hide();
 
-        const deleteListPreview2 = deleteListBox.createDiv();
-        deleteListPreview2.style.cssText = 'font-size: 11px; color: var(--text-muted); margin-top: 6px; max-height: 120px; overflow-y: auto;';
+        const deleteListPreview2 = deleteListBox.createDiv({ cls: 'btm-scroll-preview' });
 
         let parsedDeleteTags2: string[] = [];
 
@@ -6088,8 +6063,7 @@ class TagManagerModal extends Modal {
         setIcon(chooseDeleteListBtn2, 'upload');
         chooseDeleteListBtn2.onclick = () => deleteListFileInput2.click();
 
-        const applyDeleteListBtn2 = deleteListBtnRow2.createEl('button', { text: 'Delete All', cls: 'mod-cta btm-action-btn' });
-        applyDeleteListBtn2.style.background = 'var(--color-red)';
+        const applyDeleteListBtn2 = deleteListBtnRow2.createEl('button', { text: 'Delete All', cls: 'mod-warning btm-action-btn' });
         applyDeleteListBtn2.onclick = async () => {
             if (parsedDeleteTags2.length === 0) {
                 new Notice('Please load a file first.');
@@ -6349,7 +6323,7 @@ class TagManagerModal extends Modal {
     createProgressBar(container: HTMLElement, value: number) {
         const bar = container.createDiv({ cls: 'btm-progress-bar-mini' });
         const fill = bar.createDiv({ cls: 'btm-progress-fill-mini' });
-        fill.style.width = `${value}%`;
+        fill.setCssProps({ width: `${value}%` });
         if (value < 50) fill.addClass('btm-progress-low');
         else if (value < 80) fill.addClass('btm-progress-medium');
         else fill.addClass('btm-progress-high');
@@ -6453,8 +6427,6 @@ class TagManagerModal extends Modal {
                 text: `${stats.quotedFrontmatterCount} notes with quoted properties`, 
                 cls: 'btm-stat-link btm-warning-link' 
             });
-            fmLink.style.display = 'block';
-            fmLink.style.marginTop = '4px';
             fmLink.onclick = () => {
                 this.close();
                 new SimpleFileListModal(this.app, 'Notes with Quoted Properties', stats.quotedFrontmatterFiles).open();
@@ -6659,7 +6631,7 @@ class TagManagerModal extends Modal {
         const invalidFiles = await this.plugin.findInvalidTagFormats();
 
         if (invalidFiles.length > 0) {
-            this.invalidBlock.style.display = 'block';
+            this.invalidBlock.show();
             
             const warningRow = this.invalidContentEl.createDiv({ cls: 'btm-invalid-warning' });
             const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
@@ -6681,7 +6653,7 @@ class TagManagerModal extends Modal {
                 list.createDiv({ text: `... and ${invalidFiles.length - 3} more`, cls: 'btm-more' });
             }
         } else {
-            this.invalidBlock.style.display = 'none';
+            this.invalidBlock.hide();
         }
     }
 
@@ -6725,7 +6697,7 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         containerEl.addClass('btm-settings-page');
 
         const dashboardSection = containerEl.createDiv({ cls: 'btm-settings-section' });
-        new Setting(dashboardSection).setName('Bulk Tag Manager').setHeading();
+        new Setting(dashboardSection).setName('Dashboard').setHeading();
         new BulkManagerSettingsDashboard(this.app, this.plugin, dashboardSection.createDiv({ cls: 'btm-dashboard' })).render();
 
         const aliasesSection = containerEl.createDiv({ cls: 'btm-section-box' });
@@ -6849,9 +6821,7 @@ class TagLowercaseSettingTab extends PluginSettingTab {
 
         const addRow = container.createDiv({ cls: 'btm-add-alias' });
         const tagInput = new TextComponent(addRow).setPlaceholder('#tag/to/protect');
-        
-        // Quick inline flex styling so the input fills the row neatly
-        tagInput.inputEl.style.flex = '1';
+        tagInput.inputEl.addClass('btm-flex-1');
         
         const addBtn = addRow.createEl('button', { text: 'Protect' });
         addBtn.onclick = async () => {
