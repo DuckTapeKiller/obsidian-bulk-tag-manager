@@ -7,9 +7,10 @@ interface OperationRecord {
     timestamp: number;
     type: string;
     description: string;
-    changes: { path: string }[];
+    changes: { path: string; before?: string; after?: string }[];
     useExternalStorage?: boolean;
     useExternalManifest?: boolean;
+    nonRevertible?: boolean;
 }
 
 interface FileChange {
@@ -162,10 +163,57 @@ interface TagInteractionOptions {
     enableContextMenu?: boolean;
 }
 
+type TagHierarchySortStrategy = 'alphabetical' | 'nesting' | 'usage';
+
+type GlobalSearchInstance = {
+    openGlobalSearch?: (query: string) => void;
+    getGlobalSearchQuery?: () => string;
+};
+
+type InternalPlugins = {
+    getPluginById?: (id: string) => { instance?: unknown } | undefined;
+};
+
+type DragManager = {
+    draggable?: {
+        source?: string;
+        title?: string;
+    };
+    onDragStart?: (
+        event: DragEvent,
+        data: { source: string; type: string; title: string; icon: string },
+    ) => void;
+    updateHover?: (targetEl: HTMLElement, cls: string) => void;
+    setAction?: (action: string) => void;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getGlobalSearch(app: App): GlobalSearchInstance | undefined {
+    const internalPlugins = (app as App & { internalPlugins?: InternalPlugins }).internalPlugins;
+    const instance = internalPlugins?.getPluginById?.('global-search')?.instance;
+    if (!instance) return undefined;
+    if (!isRecord(instance)) return undefined;
+    return instance as GlobalSearchInstance;
+}
+
+function getDragManager(app: App): DragManager | undefined {
+    const dragManager = (app as App & { dragManager?: unknown }).dragManager;
+    if (!dragManager) return undefined;
+    if (!isRecord(dragManager)) return undefined;
+    return dragManager as DragManager;
+}
+
+function runAsync(task: () => Promise<unknown>): void {
+    void task().catch((err) => console.error('[Bulk Tag Manager]', err));
+}
+
 function registerDelegatedDomEvent(
     component: Component,
-    target: EventTarget,
-    eventName: keyof DocumentEventMap | keyof WindowEventMap,
+    target: Document | Window | HTMLElement,
+    eventName: string,
     selector: string,
     handler: (event: Event, targetEl: HTMLElement) => void,
     options?: AddEventListenerOptions | boolean,
@@ -185,7 +233,8 @@ function registerDelegatedDomEvent(
 
         handler(event, closest as HTMLElement);
     };
-    component.registerDomEvent(target as any, eventName as any, listener as any, options);
+    target.addEventListener(eventName, listener, options);
+    component.register(() => target.removeEventListener(eventName, listener, options));
 }
 
 function menuForEvent(event: MouseEvent): Menu {
@@ -199,7 +248,7 @@ function menuForEvent(event: MouseEvent): Menu {
 
     const menu = new Menu();
     (event as MouseEvent & { obsidian_contextmenu?: Menu }).obsidian_contextmenu = menu;
-    activeWindow.setTimeout(() => menu.showAtPosition({ x: event.pageX, y: event.pageY }), 0);
+    window.setTimeout(() => menu.showAtPosition({ x: event.pageX, y: event.pageY }), 0);
     return menu;
 }
 
@@ -247,7 +296,7 @@ class InlineTagSuggest {
         inputEl.addEventListener('input', () => this.updateSuggestions());
         inputEl.addEventListener('blur', () => {
             // Delay to allow clicking on an item
-            this.inputEl.win.setTimeout(() => this.hide(), 200);
+            window.setTimeout(() => this.hide(), 200);
         });
         inputEl.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') this.hide();
@@ -268,7 +317,7 @@ class InlineTagSuggest {
         const query = this.inputEl.value.toLowerCase().replace(/^#/, '');
         if (!query) { this.hide(); return; }
 
-        const allTags = Object.keys((this.app.metadataCache as any).getTags() || {}).map(t => t.replace(/^#/, ''));
+        const allTags = Object.keys(this.app.metadataCache.getTags() ?? {}).map(t => t.replace(/^#/, ''));
         const matches = allTags.filter(t => t.toLowerCase().includes(query)).slice(0, 8);
 
         if (matches.length > 0) {
@@ -307,18 +356,26 @@ export default class TagLowercasePlugin extends Plugin {
         });
 
         this.addCommand({
+            id: 'open-tag-manager-modal',
+            name: 'Open dashboard (modal)',
+            callback: () => new TagManagerModal(this.app, this).open(),
+        });
+
+        this.addCommand({
             id: 'convert-all-tags',
             name: 'Convert all tags (with preview)',
             callback: async () => {
                 await this.loadSettings(); // Reload settings before running
-                this.runConversionWithPreview();
+                await this.runConversionWithPreview();
             }
         });
 
         this.addCommand({
             id: 'generate-tag-list',
             name: 'Generate Tag List',
-            callback: () => this.generateTagList()
+            callback: () => {
+                void this.generateTagList();
+            }
         });
 
         this.addCommand({
@@ -336,7 +393,9 @@ export default class TagLowercasePlugin extends Plugin {
         this.addCommand({
             id: 'undo-last-operation',
             name: 'Undo Last Tag Operation',
-            callback: () => this.undoLastOperation()
+            callback: () => {
+                void this.undoLastOperation();
+            }
         });
 
         this.settingsTab = new TagLowercaseSettingTab(this.app, this);
@@ -356,7 +415,7 @@ export default class TagLowercasePlugin extends Plugin {
 
     onunload() {
         for (const timer of this.aliasDebounceTimers.values()) {
-            activeWindow.clearTimeout(timer);
+            window.clearTimeout(timer);
         }
         this.aliasDebounceTimers.clear();
     }
@@ -385,10 +444,10 @@ export default class TagLowercasePlugin extends Plugin {
 
     applyAliasesDebounced(file: TFile) {
         const existingTimer = this.aliasDebounceTimers.get(file.path);
-        if (existingTimer) activeWindow.clearTimeout(existingTimer);
+        if (existingTimer) window.clearTimeout(existingTimer);
         
-        const timer = activeWindow.setTimeout(() => {
-            this.applyAliases(file);
+        const timer = window.setTimeout(() => {
+            void this.applyAliases(file);
             this.aliasDebounceTimers.delete(file.path);
         }, 1000);
         
@@ -396,17 +455,21 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async loadSettings() {
-        const loaded = await this.loadData() || {};
+        const loadedRaw: unknown = await this.loadData();
+        const loaded = isRecord(loadedRaw) ? (loadedRaw as Partial<TagLowercaseSettings>) : {};
+        const loadedScopeFilter = isRecord(loaded.scopeFilter) ? (loaded.scopeFilter as Partial<ScopeFilter>) : {};
+        const loadedAliases = isRecord(loaded.aliases) ? (loaded.aliases as Record<string, string>) : {};
+
         this.settings = {
             ...DEFAULT_SETTINGS,
             ...loaded,
             scopeFilter: { 
                 ...DEFAULT_SETTINGS.scopeFilter, 
-                ...(loaded.scopeFilter || {}) 
+                ...loadedScopeFilter,
             },
             aliases: {
                 ...DEFAULT_SETTINGS.aliases,
-                ...(loaded.aliases || {})
+                ...loadedAliases,
             }
         };
     }
@@ -418,10 +481,14 @@ export default class TagLowercasePlugin extends Plugin {
     registerTagWranglerFeatures() {
         this.registerEvent(
             this.app.workspace.on('editor-menu', (menu, editor) => {
-                const token = (editor as any).getClickableTokenAt?.(editor.getCursor());
-                if (token?.type === 'tag') {
-                    this.setupTagWranglerMenu(menu, token.text);
-                }
+                const editorWithClickableToken = editor as unknown as {
+                    getCursor: () => unknown;
+                    getClickableTokenAt?: (cursor: unknown) => unknown;
+                };
+
+                const token = editorWithClickableToken.getClickableTokenAt?.(editorWithClickableToken.getCursor());
+                if (!isRecord(token) || token.type !== 'tag' || typeof token.text !== 'string') return;
+                this.setupTagWranglerMenu(menu, token.text);
             }),
         );
 
@@ -442,9 +509,10 @@ export default class TagLowercasePlugin extends Plugin {
             const dragEvent = event as DragEvent;
             const tagText = targetEl.querySelector('.tag-pane-tag-text, .tree-item-inner-text')?.textContent?.trim();
             if (!dragEvent.dataTransfer || !tagText) return;
+            const dragManager = getDragManager(this.app);
 
             dragEvent.dataTransfer.setData('text/plain', '#' + tagText);
-            (this.app as App & { dragManager?: any }).dragManager?.onDragStart(dragEvent, {
+            dragManager?.onDragStart?.(dragEvent, {
                 source: 'bulk-tag-manager',
                 type: 'text',
                 title: tagText,
@@ -454,7 +522,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         const dropHandler = (event: Event, targetEl: HTMLElement, drop = false) => {
             const dragEvent = event as DragEvent;
-            const dragManager = (this.app as App & { dragManager?: any }).dragManager;
+            const dragManager = getDragManager(this.app);
             const info = dragManager?.draggable;
             if (!dragEvent.dataTransfer || info?.source !== 'bulk-tag-manager' || dragEvent.defaultPrevented) return;
 
@@ -498,7 +566,10 @@ export default class TagLowercasePlugin extends Plugin {
             dropHandler(event, closest as HTMLElement, true);
         }, { capture: true });
 
-        (this.app.workspace as any).registerHoverLinkSource?.(TAG_HOVER_SOURCE, { display: 'Tags View', defaultMod: true });
+        const workspaceWithHoverSources = this.app.workspace as unknown as {
+            registerHoverLinkSource?: (sourceId: string, options: { display: string; defaultMod?: boolean }) => void;
+        };
+        workspaceWithHoverSources.registerHoverLinkSource?.(TAG_HOVER_SOURCE, { display: 'Tags View', defaultMod: true });
 
         this.addChild(new TagInteractionHandler(this, {
             hoverSource: TAG_HOVER_SOURCE,
@@ -547,7 +618,7 @@ export default class TagLowercasePlugin extends Plugin {
             this.pageAliases.clear();
             this.tagPages.clear();
 
-            for (const path of (this.app.metadataCache as any).getCachedFiles()) {
+            for (const path of this.app.metadataCache.getCachedFiles()) {
                 const file = this.app.vault.getAbstractFileByPath(path);
                 if (file instanceof TFile) {
                     this.updateTagPage(file, this.app.metadataCache.getCache(path)?.frontmatter);
@@ -600,7 +671,12 @@ export default class TagLowercasePlugin extends Plugin {
             const baseName = cleanTag.split('/').join(' ');
             const folder = this.app.fileManager.getNewFileParent(this.app.workspace.getActiveFile()?.path ?? '');
             const folderPrefix = folder.path ? `${folder.path}/` : '';
-            const path = (this.app.vault as any).getAvailablePath(`${folderPrefix}${baseName}`, 'md');
+            const vaultWithAvailablePath = this.app.vault as unknown as {
+                getAvailablePath?: (path: string, extension: string) => string;
+            };
+            const path = vaultWithAvailablePath.getAvailablePath
+                ? vaultWithAvailablePath.getAvailablePath(`${folderPrefix}${baseName}`, 'md')
+                : `${folderPrefix}${baseName}.md`;
             file = await this.app.vault.create(path, [
                 '---',
                 `Aliases: [ ${JSON.stringify('#' + cleanTag)} ]`,
@@ -691,10 +767,9 @@ export default class TagLowercasePlugin extends Plugin {
     setupTagWranglerMenu(menu: Menu, tagName: string, context: TagMenuContext = {}) {
         const cleanTag = tagName.replace(/^#/, '');
         const tagPage = this.tagPage(cleanTag);
-        const searchPlugin = (this.app as App & { internalPlugins?: { getPluginById: (id: string) => { instance?: any } | undefined } }).internalPlugins?.getPluginById('global-search');
-        const search = searchPlugin?.instance;
+        const search = getGlobalSearch(this.app);
         const query = search?.getGlobalSearchQuery?.() ?? '';
-        const smartRandom = (this.app as App & { plugins?: { plugins?: Record<string, any> } }).plugins?.plugins?.['smart-random-note'];
+        const smartRandom = (this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins?.['smart-random-note'];
 
         menu.addItem((item) => item.setIcon('pencil').setTitle(`Rename #${cleanTag}`).onClick(() => {
             new TagRenamePromptModal(this.app, this, cleanTag).open();
@@ -785,7 +860,12 @@ export default class TagLowercasePlugin extends Plugin {
 
         if (filePattern) {
             // Issue 12: Basic ReDoS protection
-            if (filePattern.length > 100 || /([\+\*\?])\1+/.test(filePattern) || /(\([^\)]+[\+\*]\)\+)/.test(filePattern)) {
+            const looksComplex =
+                filePattern.length > 100 ||
+                /([+*?])\1+/.test(filePattern) ||
+                /\([^)]*[+*][^)]*\)\+/.test(filePattern);
+
+            if (looksComplex) {
                 console.warn('File pattern is too complex, skipping regex filter.');
             } else {
                 try {
@@ -831,7 +911,7 @@ export default class TagLowercasePlugin extends Plugin {
         } catch (e) {
             console.error('Failed to save external history snapshots:', e);
             new Notice('Warning: Failed to save history snapshots. This operation may not be reversible.');
-            (fullRecord as any).nonRevertible = true;
+            fullRecord.nonRevertible = true;
         }
 
         this.settings.operationHistory.unshift(fullRecord);
@@ -904,7 +984,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         new Notice(`Reverting: ${lastOp.description}...`);
 
-        if ((lastOp as any).nonRevertible) {
+        if (lastOp.nonRevertible) {
             new Notice('This operation cannot be reverted (snapshots missing).');
             return;
         }
@@ -947,7 +1027,7 @@ export default class TagLowercasePlugin extends Plugin {
                         }
                     } else {
                         // Support legacy snapshots (if any still exist)
-                        beforeContent = (change as any).before;
+                        beforeContent = change.before ?? '';
                     }
 
                     if (beforeContent && beforeContent !== '(Snapshot omitted due to size)') {
@@ -988,7 +1068,6 @@ export default class TagLowercasePlugin extends Plugin {
                 progressModal.open();
                 try {
                     this.isBulkOperationInProgress = true;
-                    let successCount = 0;
                     let attemptCount = 0;
                     const changes: FileChange[] = [];
                     const errors: { path: string; message: string }[] = [];
@@ -998,26 +1077,27 @@ export default class TagLowercasePlugin extends Plugin {
                         try {
                             const before = await this.app.vault.read(file);
                             await this.app.fileManager.processFrontMatter(file, (fm) => {
-                                const processValue = (val: any): any => {
+                                if (!isRecord(fm)) return;
+
+                                const processValue = (val: unknown): unknown => {
                                     if (typeof val === 'string') return val.trim();
                                     if (Array.isArray(val)) return val.map(v => processValue(v));
                                     
                                     // Recursive walk for nested objects, excluding Dates
-                                    if (val !== null && typeof val === 'object' && !(val instanceof Date)) {
+                                    if (isRecord(val) && !(val instanceof Date)) {
                                         for (const k in val) val[k] = processValue(val[k]);
                                     }
                                     return val;
                                 };
 
-                                Object.keys(fm).forEach(key => {
+                                for (const key of Object.keys(fm)) {
                                     fm[key] = processValue(fm[key]);
-                                });
+                                }
                             });
                             const after = await this.app.vault.read(file);
                             if (before !== after) {
                                 changes.push({ path: file.path, before, after });
                             }
-                            successCount++;
                         } catch (e) {
                             const errorMsg = e instanceof Error ? e.message : String(e);
                             console.error(`Standardise failed for ${file.path}:`, errorMsg);
@@ -1027,7 +1107,7 @@ export default class TagLowercasePlugin extends Plugin {
                         // Throttle: Yield to event loop every 50 files based on attempts
                         if (attemptCount % 50 === 0) {
                             progressModal.update(attemptCount);
-                            await new Promise(resolve => activeWindow.setTimeout(resolve, 5)); 
+                            await new Promise(resolve => window.setTimeout(resolve, 5));
                         } else {
                             progressModal.update(attemptCount);
                         }
@@ -1130,11 +1210,11 @@ export default class TagLowercasePlugin extends Plugin {
 
                 const fm = cache.frontmatter;
                 if (fm.tags) {
-                    if (Array.isArray(fm.tags)) fm.tags.forEach((t: any) => typeof t === 'string' && checkTag(t));
+                    if (Array.isArray(fm.tags)) fm.tags.forEach((t: unknown) => typeof t === 'string' && checkTag(t));
                     else if (typeof fm.tags === 'string') checkTag(fm.tags);
                 }
                 if (fm.tag) {
-                    if (Array.isArray(fm.tag)) fm.tag.forEach((t: any) => typeof t === 'string' && checkTag(t));
+                    if (Array.isArray(fm.tag)) fm.tag.forEach((t: unknown) => typeof t === 'string' && checkTag(t));
                     else if (typeof fm.tag === 'string') checkTag(fm.tag);
                 }
 
@@ -1274,7 +1354,7 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async generateTagList() {
-        const tags = (this.app.metadataCache as any).getTags();
+        const tags = this.app.metadataCache.getTags();
         if (!tags || Object.keys(tags).length === 0) {
             new Notice('No tags found in vault.');
             return;
@@ -1518,14 +1598,14 @@ export default class TagLowercasePlugin extends Plugin {
                 ));
             }
             if (cache?.frontmatter) {
-                const extract = (val: any) => {
+                const extract = (val: unknown) => {
                     if (typeof val === 'string') {
                         val.split(',').forEach((v: string) => {
                             const clean = v.trim().startsWith('#') ? v.trim().substring(1) : v.trim();
                             if (clean) tagsInScope.add(clean.toLowerCase());
                         });
                     } else if (Array.isArray(val)) {
-                        val.forEach((v: any) => {
+                        val.forEach((v: unknown) => {
                             if (typeof v === 'string') {
                                 const clean = v.startsWith('#') ? v.substring(1) : v;
                                 tagsInScope.add(clean.toLowerCase());
@@ -1751,14 +1831,14 @@ export default class TagLowercasePlugin extends Plugin {
                 ));
             }
             if (cache?.frontmatter) {
-                const extract = (val: any) => {
+                const extract = (val: unknown) => {
                     if (typeof val === 'string') {
                         val.split(',').forEach((v: string) => {
                             const clean = v.trim().startsWith('#') ? v.trim().substring(1) : v.trim();
                             if (clean) tagsInScope.add(clean.toLowerCase());
                         });
                     } else if (Array.isArray(val)) {
-                        val.forEach((v: any) => {
+                        val.forEach((v: unknown) => {
                             if (typeof v === 'string') {
                                 const clean = v.startsWith('#') ? v.substring(1) : v;
                                 tagsInScope.add(clean.toLowerCase());
@@ -1956,14 +2036,14 @@ export default class TagLowercasePlugin extends Plugin {
                 ));
             }
             if (cache?.frontmatter) {
-                const extract = (val: any) => {
+                const extract = (val: unknown) => {
                     if (typeof val === 'string') {
                         val.split(',').forEach((v: string) => {
                             const clean = v.trim().startsWith('#') ? v.trim().substring(1) : v.trim();
                             if (clean) tagsInScope.add(clean.toLowerCase());
                         });
                     } else if (Array.isArray(val)) {
-                        val.forEach((v: any) => {
+                        val.forEach((v: unknown) => {
                             if (typeof v === 'string') {
                                 const clean = v.startsWith('#') ? v.substring(1) : v;
                                 tagsInScope.add(clean.toLowerCase());
@@ -2224,7 +2304,11 @@ export default class TagLowercasePlugin extends Plugin {
         let regex: RegExp;
 
         // Issue 12: Basic ReDoS protection
-        if (pattern.length > 100 || /([\+\*\?])\1+/.test(pattern) || /(\([^\)]+[\+\*]\)\+)/.test(pattern)) {
+        const looksComplex =
+            pattern.length > 100 ||
+            /([+*?])\1+/.test(pattern) ||
+            /\([^)]*[+*][^)]*\)\+/.test(pattern);
+        if (looksComplex) {
             new Notice('Regex pattern is too complex. Please simplify.');
             return;
         }
@@ -2330,10 +2414,11 @@ export default class TagLowercasePlugin extends Plugin {
     // --- Tag Analysis ---
 
     getTagHierarchy(): TagNode[] {
-        const tags = (this.app.metadataCache as any).getTags() || {};
+        const tags = this.app.metadataCache.getTags();
         const root: TagNode[] = [];
 
-        for (const [tag, count] of Object.entries(tags)) {
+        for (const tag of Object.keys(tags)) {
+            const count = tags[tag];
             const parts = tag.substring(1).split('/');
             let currentLevel = root;
             let currentPath = '';
@@ -2350,7 +2435,7 @@ export default class TagLowercasePlugin extends Plugin {
                 }
 
                 if (i === parts.length - 1) {
-                    existingNode.count = count as number;
+                    existingNode.count = count;
                 }
 
                 currentLevel = existingNode.children;
@@ -2372,10 +2457,10 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     findOrphanedTags(): { tag: string; count: number }[] {
-        const tags = (this.app.metadataCache as any).getTags() || {};
-        return Object.entries(tags)
-            .filter(([, count]) => (count as number) < this.settings.orphanThreshold)
-            .map(([tag, count]) => ({ tag, count: count as number }))
+        const tags = this.app.metadataCache.getTags();
+        return Object.keys(tags)
+            .map(tag => ({ tag, count: tags[tag] }))
+            .filter(({ count }) => count < this.settings.orphanThreshold)
             .sort((a, b) => a.count - b.count);
     }
 
@@ -2390,9 +2475,9 @@ export default class TagLowercasePlugin extends Plugin {
             }
             if (cache?.frontmatter) {
                 const fm = cache.frontmatter;
-                const extractTags = (val: any) => {
+                const extractTags = (val: unknown) => {
                     if (typeof val === 'string') val.split(',').forEach(t => tagSet.add(t.trim().startsWith('#') ? t.trim() : '#' + t.trim()));
-                    else if (Array.isArray(val)) val.forEach(t => typeof t === 'string' && tagSet.add(t.startsWith('#') ? t : '#' + t));
+                    else if (Array.isArray(val)) val.forEach((t: unknown) => typeof t === 'string' && tagSet.add(t.startsWith('#') ? t : '#' + t));
                 };
                 if (fm.tags) extractTags(fm.tags);
                 if (fm.tag) extractTags(fm.tag);
@@ -2665,7 +2750,7 @@ export default class TagLowercasePlugin extends Plugin {
             : 100;
 
         // --- 3. Duplicate Detection across case variants ---
-        const globalTags = (this.app.metadataCache as any).getTags();
+        const globalTags = this.app.metadataCache.getTags();
         const caseGroups = new Map<string, string[]>();
 
         tags.forEach(tag => {
@@ -2725,7 +2810,7 @@ export default class TagLowercasePlugin extends Plugin {
             const fm = cache?.frontmatter;
             if (fm) {
                 const seenInFM = new Set<string>();
-                const checkFMKey = (key: string, value: any) => {
+                const checkFMKey = (key: string, value: unknown) => {
                     if (value === undefined || value === null) return;
                     if (typeof value === 'string') {
                         const clean = value.startsWith('#') ? value.substring(1) : value;
@@ -2740,7 +2825,7 @@ export default class TagLowercasePlugin extends Plugin {
                         const err = validateTagString(value, `Front matter ${key}`);
                         if (err) issues.push(err);
                     } else if (Array.isArray(value)) {
-                        value.forEach(t => {
+                        value.forEach((t: unknown) => {
                             const tagStr = String(t);
                             const clean = tagStr.startsWith('#') ? tagStr.substring(1) : tagStr;
                             
@@ -3289,7 +3374,7 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     getAllTags(): string[] {
-        const tags = (this.app.metadataCache as any).getTags() || {};
+        const tags = this.app.metadataCache.getTags();
         return Object.keys(tags).map(t => t.substring(1)).sort();
     }
 }
@@ -3336,9 +3421,9 @@ class ProgressModal extends Modal {
 class PreviewModal extends Modal {
     private plugin: TagLowercasePlugin;
     private preview: PreviewResult;
-    private onConfirm: (files: PreviewFile[]) => void;
+    private onConfirm: (files: PreviewFile[]) => void | Promise<void>;
 
-    constructor(app: App, plugin: TagLowercasePlugin, preview: PreviewResult, onConfirm: (files: PreviewFile[]) => void) {
+    constructor(app: App, plugin: TagLowercasePlugin, preview: PreviewResult, onConfirm: (files: PreviewFile[]) => void | Promise<void>) {
         super(app);
         this.plugin = plugin;
         this.preview = preview;
@@ -3401,8 +3486,11 @@ class PreviewModal extends Modal {
 
         const confirmBtn = btnContainer.createEl('button', { text: 'Apply Changes', cls: 'mod-cta' });
         confirmBtn.onclick = () => {
+            const selected = this.preview.affectedFiles.filter(f => f.included);
             this.close();
-            this.onConfirm(this.preview.affectedFiles.filter(f => f.included));
+            runAsync(async () => {
+                await this.onConfirm(selected);
+            });
         };
     }
 
@@ -3459,16 +3547,16 @@ class HistoryModal extends Modal {
             }
 
             if (op === this.plugin.settings.operationHistory[0]) {
-                if ((op as any).nonRevertible) {
+                if (op.nonRevertible) {
                     itemEl.createDiv({
                         cls: 'btm-history-warning',
                         text: '⚠ Snapshots omitted due to size - cannot undo.',
                     });
                 } else {
                     const revertBtn = itemEl.createEl('button', { text: 'Undo', cls: 'btm-revert-btn' });
-                    revertBtn.onclick = async () => {
+                    revertBtn.onclick = () => {
                         this.close();
-                        await this.plugin.undoLastOperation();
+                        void this.plugin.undoLastOperation();
                     };
                 }
             }
@@ -3483,10 +3571,10 @@ class HistoryModal extends Modal {
 // Themed Confirmation Modal
 class BtmConfirmationModal extends Modal {
     private message: string;
-    private onConfirm: () => void;
+    private onConfirm: () => void | Promise<void>;
     private title: string;
 
-    constructor(app: App, title: string, message: string, onConfirm: () => void) {
+    constructor(app: App, title: string, message: string, onConfirm: () => void | Promise<void>) {
         super(app);
         this.title = title;
         this.message = message;
@@ -3512,7 +3600,9 @@ class BtmConfirmationModal extends Modal {
         const confirmBtn = btnRow.createEl('button', { text: 'Confirm', cls: 'mod-cta btm-conf-btn' });
         confirmBtn.onclick = () => {
             this.close();
-            this.onConfirm();
+            runAsync(async () => {
+                await this.onConfirm();
+            });
         };
     }
 
@@ -3525,7 +3615,7 @@ class BtmConfirmationModal extends Modal {
 class TagHierarchyModal extends Modal {
     private plugin: TagLowercasePlugin;
     private searchQuery: string = '';
-    private sortStrategy: 'alphabetical' | 'nesting' | 'usage' = 'alphabetical';
+    private sortStrategy: TagHierarchySortStrategy = 'alphabetical';
     private treeEl: HTMLElement;
     private hierarchy: TagNode[];
 
@@ -3563,22 +3653,25 @@ class TagHierarchyModal extends Modal {
         // Row 2: Sort and Action Buttons
         const controlRow = contentEl.createDiv({ cls: 'btm-tree-controls-row' });
         
-        const sortLabel = controlRow.createSpan({ text: 'Sort by:', cls: 'btm-control-label' });
+        controlRow.createSpan({ text: 'Sort by:', cls: 'btm-control-label' });
         const dropdown = new DropdownComponent(controlRow)
             .addOption('alphabetical', 'A-Z')
             .addOption('nesting', 'Nested Count')
             .addOption('usage', 'Usage')
             .setValue(this.sortStrategy)
-            .onChange((value: any) => {
-                this.sortStrategy = value;
-                this.updateDisplay();
+            .onChange((value) => {
+                if (value === 'alphabetical' || value === 'nesting' || value === 'usage') {
+                    this.sortStrategy = value;
+                    this.updateDisplay();
+                }
             });
         dropdown.selectEl.addClass('btm-tree-sort-dropdown');
 
-        const spacer = controlRow.createDiv({ cls: 'btm-spacer' });
+        controlRow.createDiv({ cls: 'btm-spacer' });
 
         const expandBtn = controlRow.createEl('button', { text: 'Expand All', cls: 'btm-tiny-btn' });
         const collapseBtn = controlRow.createEl('button', { text: 'Collapse All', cls: 'btm-tiny-btn' });
+        const copyBtn = controlRow.createEl('button', { text: 'Copy All', cls: 'btm-tiny-btn' });
 
         // Tree Area
         this.treeEl = contentEl.createDiv({ cls: 'btm-tree-container' });
@@ -3597,6 +3690,24 @@ class TagHierarchyModal extends Modal {
                 setIcon(el as HTMLElement, 'chevron-right');
             });
         };
+
+        copyBtn.onclick = () => {
+            const clonedHierarchy = this.deepCloneNodes(this.hierarchy);
+            const filtered = this.filterNodes(clonedHierarchy, this.searchQuery);
+            this.sortNodes(filtered);
+            const tags = this.flattenNodes(filtered);
+            const text = tags.map(t => `#${t}`).join('\n');
+
+            runAsync(async () => {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    new Notice(`Copied ${tags.length} tag${tags.length === 1 ? '' : 's'} to clipboard.`);
+                } catch (err) {
+                    console.error('Failed to copy tags to clipboard', err);
+                    new Notice('Failed to copy tags to clipboard.');
+                }
+            });
+        };
     }
 
     private deepCloneNodes(nodes: TagNode[]): TagNode[] {
@@ -3613,6 +3724,22 @@ class TagHierarchyModal extends Modal {
         const filtered = this.filterNodes(clonedHierarchy, this.searchQuery);
         this.sortNodes(filtered);
         this.renderTree(this.treeEl, filtered, 0);
+    }
+
+    private flattenNodes(nodes: TagNode[]): string[] {
+        const results: string[] = [];
+        const walk = (node: TagNode) => {
+            results.push(node.fullPath);
+            for (const child of node.children) {
+                walk(child);
+            }
+        };
+
+        for (const node of nodes) {
+            walk(node);
+        }
+
+        return results;
     }
 
     private filterNodes(nodes: TagNode[], query: string): TagNode[] {
@@ -3761,52 +3888,56 @@ class InvalidTagsModal extends Modal {
                     input.inputEl.addClass('btm-inline-input');
                     
                     const updateBtn = actionRow.createEl('button', { text: 'Update', cls: 'btm-small-btn mod-cta' });
-                    updateBtn.onclick = async () => {
-                        const newValue = input.getValue();
-                        const file = this.app.vault.getAbstractFileByPath(item.path);
-                        if (file instanceof TFile) {
-                            await this.app.fileManager.processFrontMatter(file, (fm) => {
-                                const updateOne = (key: string) => {
-                                    if (fm[key]) {
-                                        if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
-                                            fm[key] = newValue;
-                                        } else if (Array.isArray(fm[key])) {
-                                            const idx = fm[key].findIndex((t: any) => String(t) === issue.tag);
-                                            if (idx > -1) fm[key][idx] = newValue;
+                    updateBtn.onclick = () => {
+                        runAsync(async () => {
+                            const newValue = input.getValue();
+                            const file = this.app.vault.getAbstractFileByPath(item.path);
+                            if (file instanceof TFile) {
+                                await this.app.fileManager.processFrontMatter(file, (fm) => {
+                                    const updateOne = (key: string) => {
+                                        if (fm[key]) {
+                                            if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
+                                                fm[key] = newValue;
+                                            } else if (Array.isArray(fm[key])) {
+                                                const idx = fm[key].findIndex((t: unknown) => String(t) === issue.tag);
+                                                if (idx > -1) fm[key][idx] = newValue;
+                                            }
                                         }
-                                    }
-                                };
-                                updateOne('tags');
-                                updateOne('tag');
-                            });
-                            issueEl.remove();
-                            this.checkEmpty(itemEl, issuesEl, listEl);
-                            new Notice('Tag updated.');
-                        }
+                                    };
+                                    updateOne('tags');
+                                    updateOne('tag');
+                                });
+                                issueEl.remove();
+                                this.checkEmpty(itemEl, issuesEl, listEl);
+                                new Notice('Tag updated.');
+                            }
+                        });
                     };
 
                     const deleteBtn = actionRow.createEl('button', { text: 'Delete', cls: 'btm-small-btn mod-warning' });
-                    deleteBtn.onclick = async () => {
-                        const file = this.app.vault.getAbstractFileByPath(item.path);
-                        if (file instanceof TFile) {
-                            await this.app.fileManager.processFrontMatter(file, (fm) => {
-                                const removeOne = (key: string) => {
-                                    if (fm[key]) {
-                                        if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
-                                            delete fm[key];
-                                        } else if (Array.isArray(fm[key])) {
-                                            const idx = fm[key].findIndex((t: any) => String(t) === issue.tag);
-                                            if (idx > -1) fm[key].splice(idx, 1);
+                    deleteBtn.onclick = () => {
+                        runAsync(async () => {
+                            const file = this.app.vault.getAbstractFileByPath(item.path);
+                            if (file instanceof TFile) {
+                                await this.app.fileManager.processFrontMatter(file, (fm) => {
+                                    const removeOne = (key: string) => {
+                                        if (fm[key]) {
+                                            if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
+                                                delete fm[key];
+                                            } else if (Array.isArray(fm[key])) {
+                                                const idx = fm[key].findIndex((t: unknown) => String(t) === issue.tag);
+                                                if (idx > -1) fm[key].splice(idx, 1);
+                                            }
                                         }
-                                    }
-                                };
-                                removeOne('tags');
-                                removeOne('tag');
-                            });
-                            issueEl.remove();
-                            this.checkEmpty(itemEl, issuesEl, listEl);
-                            new Notice('Tag deleted.');
-                        }
+                                    };
+                                    removeOne('tags');
+                                    removeOne('tag');
+                                });
+                                issueEl.remove();
+                                this.checkEmpty(itemEl, issuesEl, listEl);
+                                new Notice('Tag deleted.');
+                            }
+                        });
                     };
                 }
 
@@ -3817,13 +3948,15 @@ class InvalidTagsModal extends Modal {
                 };
 
                 const ignoreBtn = actionRow.createEl('button', { text: 'Ignore', cls: 'btm-small-btn' });
-                ignoreBtn.onclick = async () => {
-                    const id = `${item.path}|${issue.description}`;
-                    this.plugin.settings.ignoredIssues.push(id);
-                    await this.plugin.saveSettings();
-                    issueEl.remove();
-                    this.checkEmpty(itemEl, issuesEl, listEl);
-                    new Notice('Issue ignored.');
+                ignoreBtn.onclick = () => {
+                    runAsync(async () => {
+                        const id = `${item.path}|${issue.description}`;
+                        this.plugin.settings.ignoredIssues.push(id);
+                        await this.plugin.saveSettings();
+                        issueEl.remove();
+                        this.checkEmpty(itemEl, issuesEl, listEl);
+                        new Notice('Issue ignored.');
+                    });
                 };
             }
         }
@@ -4039,9 +4172,9 @@ class TagListModal extends Modal {
             const btn = itemEl.createEl('button', { text: 'Search', cls: 'btm-search-btn' });
             btn.onclick = () => {
                 this.close();
-                const searchPlugin = (this.app as any).internalPlugins?.getPluginById('global-search');
-                if (searchPlugin?.instance) {
-                    searchPlugin.instance.openGlobalSearch(`tag:${tagText}`);
+                const search = getGlobalSearch(this.app);
+                if (search?.openGlobalSearch) {
+                    search.openGlobalSearch(`tag:${tagText}`);
                 } else {
                     new Notice('Global Search plugin not enabled');
                 }
@@ -4145,15 +4278,17 @@ class BtmErrorReportModal extends Modal {
 
                     const fixBtn = actionRow.createEl('button', { text: 'Fix Syntax', cls: 'mod-cta btm-fix-syntax-btn' });
                     
-                    fixBtn.onclick = async () => {
-                        const file = this.app.vault.getAbstractFileByPath(err.path);
-                        if (file instanceof TFile) {
-                            await this.plugin.fixInvalidMappingError(file);
-                            itemEl.addClass('is-fixed');
-                            fixBtn.disabled = true;
-                            fixBtn.setText('Fixed');
-                            new Notice(`Fixed YAML syntax in: ${file.basename}`);
-                        }
+                    fixBtn.onclick = () => {
+                        runAsync(async () => {
+                            const file = this.app.vault.getAbstractFileByPath(err.path);
+                            if (file instanceof TFile) {
+                                await this.plugin.fixInvalidMappingError(file);
+                                itemEl.addClass('is-fixed');
+                                fixBtn.disabled = true;
+                                fixBtn.setText('Fixed');
+                                new Notice(`Fixed YAML syntax in: ${file.basename}`);
+                            }
+                        });
                     };
                 }
             }
@@ -4238,7 +4373,7 @@ class TagSuggest extends SuggestModal<string> {
         super(app);
         this.plugin = plugin;
         this.onSelect = onSelect;
-        this.tagCounts = (this.plugin.app.metadataCache as any).getTags() || {};
+        this.tagCounts = this.plugin.app.metadataCache.getTags() ?? {};
     }
 
     getSuggestions(query: string): string[] {
@@ -4271,7 +4406,7 @@ class MultiTagSelectModal extends Modal {
         super(app);
         this.plugin = plugin;
         this.onConfirm = onConfirm;
-        this.tagCounts = (this.plugin.app.metadataCache as any).getTags() || {};
+        this.tagCounts = this.plugin.app.metadataCache.getTags() ?? {};
     }
 
     onOpen() {
@@ -4350,11 +4485,11 @@ class MultiTagSelectModal extends Modal {
 class FolderSelectModal extends Modal {
     private plugin: TagLowercasePlugin;
     private selectedFolders: Set<string>;
-    private onConfirm: (folders: string[]) => void;
+    private onConfirm: (folders: string[]) => void | Promise<void>;
     private listEl: HTMLElement;
     private searchInput: TextComponent;
 
-    constructor(app: App, plugin: TagLowercasePlugin, currentFolders: string[], onConfirm: (folders: string[]) => void) {
+    constructor(app: App, plugin: TagLowercasePlugin, currentFolders: string[], onConfirm: (folders: string[]) => void | Promise<void>) {
         super(app);
         this.plugin = plugin;
         this.selectedFolders = new Set(currentFolders.filter(f => f));
@@ -4384,8 +4519,11 @@ class FolderSelectModal extends Modal {
 
         const confirmBtn = btnRow.createEl('button', { text: 'Confirm Selection', cls: 'mod-cta' });
         confirmBtn.onclick = () => {
+            const selected = Array.from(this.selectedFolders);
             this.close();
-            this.onConfirm(Array.from(this.selectedFolders));
+            runAsync(async () => {
+                await this.onConfirm(selected);
+            });
         };
     }
 
@@ -4536,7 +4674,7 @@ class TagInteractionHandler extends Component {
                     };
                 }
 
-                mouseEvent.win.setTimeout(restore, 0);
+                window.setTimeout(restore, 0);
             }, { capture: !!this.opts.mergeMenu });
         }
 
@@ -4545,9 +4683,10 @@ class TagInteractionHandler extends Component {
                 const dragEvent = event as DragEvent;
                 const tagName = toTag(targetEl);
                 if (!dragEvent.dataTransfer || !tagName) return;
+                const dragManager = getDragManager(this.plugin.app);
 
                 dragEvent.dataTransfer.setData('text/plain', tagName.startsWith('#') ? tagName : `#${tagName}`);
-                (this.plugin.app as App & { dragManager?: any }).dragManager?.onDragStart(dragEvent, {
+                dragManager?.onDragStart?.(dragEvent, {
                     source: 'bulk-tag-manager',
                     type: 'text',
                     title: tagName.replace(/^#/, ''),
@@ -4601,14 +4740,16 @@ class TagRenamePromptModal extends Modal {
         cancelBtn.onclick = () => this.close();
 
         const saveBtn = actions.createEl('button', { text: 'Rename', cls: 'mod-cta' });
-        saveBtn.onclick = async () => {
-            const nextName = input.getValue().trim().replace(/^#/, '');
-            this.close();
-            if (!nextName || nextName === this.tagName) {
-                new Notice('Unchanged or empty tag. No changes made.');
-                return;
-            }
-            await this.plugin.renameTag(this.tagName, nextName);
+        saveBtn.onclick = () => {
+            runAsync(async () => {
+                const nextName = input.getValue().trim().replace(/^#/, '');
+                this.close();
+                if (!nextName || nextName === this.tagName) {
+                    new Notice('Unchanged or empty tag. No changes made.');
+                    return;
+                }
+                await this.plugin.renameTag(this.tagName, nextName);
+            });
         };
     }
 
@@ -4639,108 +4780,17 @@ class TagPageCreateModal extends Modal {
         const actions = contentEl.createDiv({ cls: 'btm-action-row' });
         const searchBtn = actions.createEl('button', { text: 'Search Instead' });
         searchBtn.onclick = () => {
-            const search = (this.app as App & { internalPlugins?: { getPluginById: (id: string) => { instance?: any } | undefined } }).internalPlugins?.getPluginById('global-search')?.instance;
+            const search = getGlobalSearch(this.app);
             search?.openGlobalSearch?.(`tag:#${this.tagName}`);
             this.close();
         };
 
         const createBtn = actions.createEl('button', { text: 'Create Tag Page', cls: 'mod-cta' });
-        createBtn.onclick = async () => {
-            this.close();
-            await this.plugin.createTagPage(this.tagName, this.openInNewLeaf);
-        };
-    }
-
-    onClose() {
-        this.contentEl.empty();
-    }
-}
-
-class TagQuickActionsModal extends Modal {
-    plugin: TagLowercasePlugin;
-
-    constructor(app: App, plugin: TagLowercasePlugin) {
-        super(app);
-        this.plugin = plugin;
-    }
-
-    onOpen() {
-        const { contentEl } = this;
-        contentEl.empty();
-        contentEl.addClass('btm-dashboard');
-
-        new Setting(contentEl).setName('Tag Wrangler Quick Actions').setHeading();
-        contentEl.createEl('p', { text: 'Use this for quick tag tasks. Bulk and vault-wide tools now live in settings.' });
-
-        const tagRow = contentEl.createDiv({ cls: 'btm-field-column' });
-        tagRow.createEl('label', { text: 'Tag' });
-        const tagInput = new TextComponent(tagRow).setPlaceholder('#tag-name');
-        const chooseBtn = tagRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
-        setIcon(chooseBtn, 'search');
-        chooseBtn.createSpan({ text: ' Search' });
-        chooseBtn.onclick = () => new TagSuggest(this.app, this.plugin, (tag) => tagInput.setValue(`#${tag}`)).open();
-
-        const actionRow = contentEl.createDiv({ cls: 'btm-action-row' });
-        const createAction = (label: string, icon: string, onClick: (tag: string) => void | Promise<void>) => {
-            const btn = actionRow.createEl('button', { cls: 'btm-icon-btn' });
-            setIcon(btn.createSpan({ cls: 'btm-btn-icon' }), icon);
-            btn.createSpan({ text: ` ${label}` });
-            btn.onclick = async () => {
-                const tag = tagInput.getValue().trim().replace(/^#/, '');
-                if (!tag) {
-                    new Notice('Choose a tag first.');
-                    return;
-                }
-                await onClick(tag);
-            };
-        };
-
-        createAction('Rename', 'pencil', async (tag) => {
-            this.close();
-            new TagRenamePromptModal(this.app, this.plugin, tag).open();
-        });
-        createAction('Delete', 'trash', async (tag) => {
-            this.close();
-            this.plugin.confirmDeleteTag(tag);
-        });
-        createAction('Open/Create Tag Page', 'popup-open', async (tag) => {
-            this.close();
-            const tagPage = this.plugin.tagPage(tag);
-            if (tagPage) {
-                await this.plugin.openTagPage(tagPage, false, false);
-            } else {
-                new TagPageCreateModal(this.app, this.plugin, tag, false).open();
-            }
-        });
-        createAction('New Search', 'magnifying-glass', async (tag) => {
-            const search = (this.app as App & { internalPlugins?: { getPluginById: (id: string) => { instance?: any } | undefined } }).internalPlugins?.getPluginById('global-search')?.instance;
-            search?.openGlobalSearch?.(`tag:#${tag}`);
-            this.close();
-        });
-        createAction('Require In Search', 'sheets-in-box', async (tag) => {
-            const search = (this.app as App & { internalPlugins?: { getPluginById: (id: string) => { instance?: any } | undefined } }).internalPlugins?.getPluginById('global-search')?.instance;
-            const query = search?.getGlobalSearchQuery?.() ?? '';
-            search?.openGlobalSearch?.(`${query} tag:#${tag}`.trim());
-            this.close();
-        });
-        createAction('Exclude From Search', 'crossed-star', async (tag) => {
-            const search = (this.app as App & { internalPlugins?: { getPluginById: (id: string) => { instance?: any } | undefined } }).internalPlugins?.getPluginById('global-search')?.instance;
-            const query = search?.getGlobalSearchQuery?.() ?? '';
-            search?.openGlobalSearch?.(`${query} -tag:#${tag}`.trim());
-            this.close();
-        });
-        createAction('Random Note', 'dice', async (tag) => {
-            this.close();
-            await this.plugin.openRandomTaggedNote(tag);
-        });
-
-        const secondaryRow = contentEl.createDiv({ cls: 'btm-action-row' });
-        const settingsBtn = secondaryRow.createEl('button', { cls: 'btm-icon-btn' });
-        setIcon(settingsBtn.createSpan({ cls: 'btm-btn-icon' }), 'settings');
-        settingsBtn.createSpan({ text: ' Open Settings' });
-        settingsBtn.onclick = () => {
-            this.close();
-            this.plugin.openPluginSettings();
+        createBtn.onclick = () => {
+            runAsync(async () => {
+                this.close();
+                await this.plugin.createTagPage(this.tagName, this.openInNewLeaf);
+            });
         };
     }
 
@@ -4854,7 +4904,7 @@ class BulkManagerSettingsDashboard {
         addRowBtn.onclick = () => addBatchRow();
 
         const btnBatchRename = batchControlRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
-        btnBatchRename.onclick = async () => {
+        btnBatchRename.onclick = () => {
             const pairs = batchPairs
                 .map(p => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
                 .filter(p => p.from && p.to);
@@ -4928,7 +4978,7 @@ class BulkManagerSettingsDashboard {
         btnUploadCsv.onclick = () => csvFileInput.click();
 
         const btnApplyCsv = csvBtnRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
-        btnApplyCsv.onclick = async () => {
+        btnApplyCsv.onclick = () => {
             if (parsedCsvPairs.length === 0) {
                 new Notice('Please upload a valid CSV first.');
                 return;
@@ -4978,7 +5028,7 @@ class BulkManagerSettingsDashboard {
 
         const mergeActionCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         const btnMerge = mergeActionCol.createEl('button', { text: 'Merge', cls: 'mod-cta btm-action-btn' });
-        btnMerge.onclick = async () => {
+        btnMerge.onclick = () => {
             const sources = mergeSourcesInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
             const target = mergeTargetInput.getValue().trim();
             if (!sources.length || !target) {
@@ -5026,7 +5076,7 @@ class BulkManagerSettingsDashboard {
 
         const nestActionCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         const btnNest = nestActionCol.createEl('button', { text: 'Nest', cls: 'mod-cta btm-action-btn' });
-        btnNest.onclick = async () => {
+        btnNest.onclick = () => {
             const parent = nestParentInput.getValue().trim();
             const children = nestChildInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
             if (!parent || !children.length) {
@@ -5071,7 +5121,7 @@ class BulkManagerSettingsDashboard {
         }).open();
 
         const btnDelete = deleteContainer.createEl('button', { text: 'Delete', cls: 'mod-warning btm-action-btn' });
-        btnDelete.onclick = async () => {
+        btnDelete.onclick = () => {
             const tagsToDelete = deleteInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
             if (!tagsToDelete.length) {
                 new Notice('Please provide tags to delete.');
@@ -5137,7 +5187,7 @@ class BulkManagerSettingsDashboard {
         chooseDeleteListBtn.onclick = () => deleteListFileInput.click();
 
         const applyDeleteListBtn = deleteListBtnRow.createEl('button', { text: 'Delete All', cls: 'mod-warning btm-action-btn' });
-        applyDeleteListBtn.onclick = async () => {
+        applyDeleteListBtn.onclick = () => {
             if (parsedDeleteTags.length === 0) {
                 new Notice('Please load a file first.');
                 return;
@@ -5167,7 +5217,7 @@ class BulkManagerSettingsDashboard {
         patternRepCol.createEl('label', { text: 'Replacement' });
         const patternReplaceInput = new TextComponent(patternRepCol).setPlaceholder('new-$1');
         const btnPattern = patternContainer.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
-        btnPattern.onclick = async () => {
+        btnPattern.onclick = () => {
             const pattern = patternInput.getValue();
             if (!pattern) {
                 new Notice('Please provide a pattern.');
@@ -5193,10 +5243,12 @@ class BulkManagerSettingsDashboard {
                 .addOption('uppercase', 'Uppercase')
                 .addOption('none', 'No Change')
                 .setValue(this.plugin.settings.caseStrategy)
-                .onChange(async (value: TagLowercaseSettings['caseStrategy']) => {
-                    this.plugin.settings.caseStrategy = value;
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value: TagLowercaseSettings['caseStrategy']) => {
+                    runAsync(async () => {
+                        this.plugin.settings.caseStrategy = value;
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
         new Setting(settingsBox)
             .setName('Separator Style')
@@ -5205,49 +5257,59 @@ class BulkManagerSettingsDashboard {
                 .addOption('snake', 'Snake Case')
                 .addOption('kebab', 'Kebab Case')
                 .setValue(this.plugin.settings.separatorStrategy)
-                .onChange(async (value: TagLowercaseSettings['separatorStrategy']) => {
-                    this.plugin.settings.separatorStrategy = value;
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value: TagLowercaseSettings['separatorStrategy']) => {
+                    runAsync(async () => {
+                        this.plugin.settings.separatorStrategy = value;
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
         new Setting(settingsBox)
             .setName('Remove Special Characters')
             .setDesc('Removes everything except letters, numbers, hyphens (-), and underscores (_).')
             .addToggle((toggle) => toggle
                 .setValue(this.plugin.settings.removeSpecialChars)
-                .onChange(async (value) => {
-                    this.plugin.settings.removeSpecialChars = value;
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.removeSpecialChars = value;
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
         new Setting(settingsBox)
             .setName('Flatten Diacritics')
             .setDesc('Converts accented characters to their plain equivalents.')
             .addToggle((toggle) => toggle
                 .setValue(this.plugin.settings.flattenDiacritics)
-                .onChange(async (value) => {
-                    this.plugin.settings.flattenDiacritics = value;
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.flattenDiacritics = value;
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
         new Setting(settingsBox)
             .setName('Apply to Nested Tags')
             .addToggle((toggle) => toggle
                 .setValue(this.plugin.settings.applyToNestedTags)
-                .onChange(async (value) => {
-                    this.plugin.settings.applyToNestedTags = value;
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.applyToNestedTags = value;
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
         new Setting(settingsBox)
             .setName('Enable Scope Filter')
             .setDesc('Limit operations to specific folders')
             .addToggle((toggle) => toggle
                 .setValue(this.plugin.settings.scopeFilter.enabled)
-                .onChange(async (value) => {
-                    this.plugin.settings.scopeFilter.enabled = value;
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.scopeFilter.enabled = value;
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
 
         new Setting(settingsBox)
@@ -5256,10 +5318,12 @@ class BulkManagerSettingsDashboard {
             .addText((text) => text
                 .setPlaceholder('^Projects/')
                 .setValue(this.plugin.settings.scopeFilter.filePattern)
-                .onChange(async (value) => {
-                    this.plugin.settings.scopeFilter.filePattern = value.trim();
-                    await this.plugin.saveSettings();
-                    void this.updateStats();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.scopeFilter.filePattern = value.trim();
+                        await this.plugin.saveSettings();
+                        void this.updateStats();
+                    });
                 }));
 
         const scopeContainer = settingsBox.createDiv({ cls: 'btm-scope-container' });
@@ -5291,9 +5355,11 @@ class BulkManagerSettingsDashboard {
 
         const bulkActionRow = settingsBox.createDiv({ cls: 'btm-action-row' });
         const convertBtn = this.createIconButton(bulkActionRow, 'refresh-cw', 'Convert All', 'mod-cta');
-        convertBtn.onclick = async () => {
-            await this.plugin.runConversionWithPreview();
-            void this.updateStats();
+        convertBtn.onclick = () => {
+            runAsync(async () => {
+                await this.plugin.runConversionWithPreview();
+                void this.updateStats();
+            });
         };
 
         const utilBox = contentEl.createDiv({ cls: 'btm-section-box' });
@@ -5303,7 +5369,7 @@ class BulkManagerSettingsDashboard {
         setTooltip(btnClean, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
         btnClean.onclick = () => void this.plugin.standardiseProperties();
         const btnAllInline = this.createIconButton(utilRow, 'list-plus', 'Standardise to Inline Array');
-        btnAllInline.onclick = async () => {
+        btnAllInline.onclick = () => {
             const files = this.plugin.getFilteredFiles();
             new BtmConfirmationModal(
                 this.app,
@@ -5317,7 +5383,7 @@ class BulkManagerSettingsDashboard {
             ).open();
         };
         const btnAllList = this.createIconButton(utilRow, 'list-minus', 'Standardise to YAML List');
-        btnAllList.onclick = async () => {
+        btnAllList.onclick = () => {
             const files = this.plugin.getFilteredFiles();
             new BtmConfirmationModal(
                 this.app,
@@ -5399,7 +5465,7 @@ class BulkManagerSettingsDashboard {
 
         const caseButtons = caseBox.createDiv({ cls: 'btm-inline-case-btns' });
         const btnUpper = caseButtons.createEl('button', { text: 'Convert to upper', cls: 'btm-mini-case-btn' });
-        btnUpper.onclick = async () => {
+        btnUpper.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Bulk Convert to UPPERCASE',
@@ -5411,7 +5477,7 @@ class BulkManagerSettingsDashboard {
             ).open();
         };
         const btnLower = caseButtons.createEl('button', { text: 'Convert to lower', cls: 'btm-mini-case-btn' });
-        btnLower.onclick = async () => {
+        btnLower.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Bulk Convert to lowercase',
@@ -5465,7 +5531,7 @@ class BulkManagerSettingsDashboard {
 
         const formatActions = formatBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
         const btnToInline = formatActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
-        btnToInline.onclick = async () => {
+        btnToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert to Inline Array',
@@ -5478,7 +5544,7 @@ class BulkManagerSettingsDashboard {
         };
 
         const btnToList = formatActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
-        btnToList.onclick = async () => {
+        btnToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert to YAML List',
@@ -5525,7 +5591,7 @@ class BulkManagerSettingsDashboard {
 
         const wikiActions = wikiBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
         const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
-        btnWikiToInline.onclick = async () => {
+        btnWikiToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert Wiki Links to Inline Array',
@@ -5538,7 +5604,7 @@ class BulkManagerSettingsDashboard {
         };
 
         const btnWikiToList = wikiActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
-        btnWikiToList.onclick = async () => {
+        btnWikiToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert Wiki Links to YAML List',
@@ -5580,7 +5646,7 @@ class BulkManagerSettingsDashboard {
 
             const mergeAllBtn = dupBox.createEl('button', { text: 'Merge all to canonical', cls: 'btm-small-btn btm-warning-btn', attr: { style: 'margin-top: auto;' } });
             setTooltip(mergeAllBtn, 'Merge all case variants into their most-used versions');
-            mergeAllBtn.onclick = async () => {
+            mergeAllBtn.onclick = () => {
                 new BtmConfirmationModal(
                     this.app,
                     'Merge Case Duplicates',
@@ -5732,7 +5798,7 @@ class TagManagerModal extends Modal {
         this.mergeTargetInput.inputEl.addEventListener('input', () => {
             const target = this.mergeTargetInput.getValue().trim();
             const cleanTarget = target.replace(/^#/, '');
-            const globalTags = (this.plugin.app.metadataCache as any).getTags();
+            const globalTags = this.plugin.app.metadataCache.getTags() ?? {};
             if (globalTags['#' + cleanTarget] !== undefined) {
                 mergeWarning.textContent = `⚠️ #${cleanTarget} already exists. This will merge into the existing tag.`;
                 mergeWarning.show();
@@ -5752,7 +5818,7 @@ class TagManagerModal extends Modal {
         // Col 3: Action
         const mergeActionCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         const btnMerge = mergeActionCol.createEl('button', { text: 'Merge', cls: 'mod-cta btm-action-btn' });
-        btnMerge.onclick = async () => {
+        btnMerge.onclick = () => {
             const sources = this.mergeSourcesInput.getValue().split(',').map(s => s.trim()).filter(s => s);
             const target = this.mergeTargetInput.getValue().trim();
             if (sources.length > 0 && target) {
@@ -5807,7 +5873,7 @@ class TagManagerModal extends Modal {
         // Col 3: Action
         const nestActionCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         const btnNest = nestActionCol.createEl('button', { text: 'Nest', cls: 'mod-cta btm-action-btn' });
-        btnNest.onclick = async () => {
+        btnNest.onclick = () => {
             const parent = nestParentInput.getValue().trim();
             const children = nestChildInput.getValue().split(',').map(s => s.trim()).filter(s => s);
             if (parent && children.length > 0) {
@@ -5876,7 +5942,7 @@ class TagManagerModal extends Modal {
         addRowBtn.onclick = () => addBatchRow();
 
         const btnBatchRename = batchControlRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
-        btnBatchRename.onclick = async () => {
+        btnBatchRename.onclick = () => {
             const pairs = batchPairs
                 .map(p => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
                 .filter(p => p.from && p.to);
@@ -5952,7 +6018,7 @@ class TagManagerModal extends Modal {
 
         const csvActionCol = csvContainer.createDiv({ cls: 'btm-field-column' });
         const btnCsvRename = csvActionCol.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
-        btnCsvRename.onclick = async () => {
+        btnCsvRename.onclick = () => {
             if (parsedCsvPairs.length === 0) {
                 new Notice('Please load a CSV file first.');
                 return;
@@ -6000,7 +6066,7 @@ class TagManagerModal extends Modal {
 
         // Col 3: Action
         const btnDelete = deleteContainer.createEl('button', { text: 'Delete', cls: 'mod-warning btm-action-btn' });
-        btnDelete.onclick = async () => {
+        btnDelete.onclick = () => {
             const tags = this.deleteInput.getValue().split(',').map(s => s.trim()).filter(s => s);
             if (tags.length > 0) {
                 new BtmConfirmationModal(
@@ -6064,7 +6130,7 @@ class TagManagerModal extends Modal {
         chooseDeleteListBtn2.onclick = () => deleteListFileInput2.click();
 
         const applyDeleteListBtn2 = deleteListBtnRow2.createEl('button', { text: 'Delete All', cls: 'mod-warning btm-action-btn' });
-        applyDeleteListBtn2.onclick = async () => {
+        applyDeleteListBtn2.onclick = () => {
             if (parsedDeleteTags2.length === 0) {
                 new Notice('Please load a file first.');
                 return;
@@ -6099,7 +6165,7 @@ class TagManagerModal extends Modal {
 
         // Col 3: Action
         const btnPattern = patternContainer.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
-        btnPattern.onclick = async () => {
+        btnPattern.onclick = () => {
             const pattern = this.patternInput.getValue();
             const replacement = this.patternReplaceInput.getValue();
             if (pattern) {
@@ -6128,10 +6194,12 @@ class TagManagerModal extends Modal {
                 .addOption('uppercase', 'Uppercase')
                 .addOption('none', 'No Change')
                 .setValue(this.plugin.settings.caseStrategy)
-                .onChange(async (value: TagLowercaseSettings['caseStrategy']) => {
-                    this.plugin.settings.caseStrategy = value;
-                    await this.plugin.saveSettings();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                .onChange((value: TagLowercaseSettings['caseStrategy']) => {
+                    runAsync(async () => {
+                        this.plugin.settings.caseStrategy = value;
+                        await this.plugin.saveSettings();
+                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    });
                 }));
 
         new Setting(settingsBox)
@@ -6141,10 +6209,12 @@ class TagManagerModal extends Modal {
                 .addOption('snake', 'Snake Case')
                 .addOption('kebab', 'Kebab Case')
                 .setValue(this.plugin.settings.separatorStrategy)
-                .onChange(async (value: TagLowercaseSettings['separatorStrategy']) => {
-                    this.plugin.settings.separatorStrategy = value;
-                    await this.plugin.saveSettings();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                .onChange((value: TagLowercaseSettings['separatorStrategy']) => {
+                    runAsync(async () => {
+                        this.plugin.settings.separatorStrategy = value;
+                        await this.plugin.saveSettings();
+                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    });
                 }));
 
         new Setting(settingsBox)
@@ -6152,10 +6222,12 @@ class TagManagerModal extends Modal {
             .setDesc('Removes everything except letters, numbers, hyphens (-), and underscores (_).')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.removeSpecialChars)
-                .onChange(async (value) => {
-                    this.plugin.settings.removeSpecialChars = value;
-                    await this.plugin.saveSettings();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.removeSpecialChars = value;
+                        await this.plugin.saveSettings();
+                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    });
                 }));
 
         new Setting(settingsBox)
@@ -6163,20 +6235,24 @@ class TagManagerModal extends Modal {
             .setDesc('Converts accented characters to their plain equivalents (e.g., á → a, å → a).')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.flattenDiacritics)
-                .onChange(async (value) => {
-                    this.plugin.settings.flattenDiacritics = value;
-                    await this.plugin.saveSettings();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.flattenDiacritics = value;
+                        await this.plugin.saveSettings();
+                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    });
                 }));
 
         new Setting(settingsBox)
             .setName('Apply to Nested Tags')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.applyToNestedTags)
-                .onChange(async (value) => {
-                    this.plugin.settings.applyToNestedTags = value;
-                    await this.plugin.saveSettings();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.applyToNestedTags = value;
+                        await this.plugin.saveSettings();
+                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    });
                 }));
 
         // --- Scope Filter (Moved inside Bulk Settings) ---
@@ -6186,10 +6262,12 @@ class TagManagerModal extends Modal {
             .setDesc('Limit operations to specific folders')
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.scopeFilter.enabled)
-                .onChange(async (value) => {
-                    this.plugin.settings.scopeFilter.enabled = value;
-                    await this.plugin.saveSettings();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.scopeFilter.enabled = value;
+                        await this.plugin.saveSettings();
+                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    });
                 }));
 
         const scopeContainer = settingsBox.createDiv({ cls: 'btm-scope-container' });
@@ -6225,7 +6303,12 @@ class TagManagerModal extends Modal {
         // Relocated Buttons
         const bulkActionRow = settingsBox.createDiv({ cls: 'btm-action-row' });
         const btnConvertBulk = this.createIconButton(bulkActionRow, 'refresh-cw', 'Convert All', 'mod-cta');
-        btnConvertBulk.onclick = async () => { this.close(); await this.plugin.runConversionWithPreview(); };
+        btnConvertBulk.onclick = () => {
+            runAsync(async () => {
+                this.close();
+                await this.plugin.runConversionWithPreview();
+            });
+        };
 
         // Removed Fix Invalid from here (it belongs in the Invalid Tags block below Overview)
 
@@ -6238,11 +6321,11 @@ class TagManagerModal extends Modal {
         
         const btnClean = this.createIconButton(utilRow, 'file-check', 'Clean front matter formatting');
         setTooltip(btnClean, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
-        btnClean.onclick = () => this.plugin.standardiseProperties();
+        btnClean.onclick = () => void this.plugin.standardiseProperties();
 
         const btnAllInline = this.createIconButton(utilRow, 'list-plus', 'Standardise to Inline Array');
         setTooltip(btnAllInline, 'Convert all tags AND wiki link properties to Inline Array format [ ]');
-        btnAllInline.onclick = async () => {
+        btnAllInline.onclick = () => {
             const files = this.plugin.getFilteredFiles();
             new BtmConfirmationModal(
                 this.app,
@@ -6266,7 +6349,7 @@ class TagManagerModal extends Modal {
 
         const btnAllList = this.createIconButton(utilRow, 'list-minus', 'Standardise to YAML List');
         setTooltip(btnAllList, 'Convert all tags AND wiki link properties to multiline YAML List format -');
-        btnAllList.onclick = async () => {
+        btnAllList.onclick = () => {
             const files = this.plugin.getFilteredFiles();
             new BtmConfirmationModal(
                 this.app,
@@ -6297,7 +6380,12 @@ class TagManagerModal extends Modal {
 
         const btnList = this.createIconButton(actionRow, 'list', 'Tag List');
         setTooltip(btnList, 'View all tags in a list');
-        btnList.onclick = async () => { this.close(); await this.plugin.generateTagList(); };
+        btnList.onclick = () => {
+            runAsync(async () => {
+                this.close();
+                await this.plugin.generateTagList();
+            });
+        };
 
         const btnHierarchy = this.createIconButton(actionRow, 'git-branch', 'Tag Nesting');
         setTooltip(btnHierarchy, 'View tag hierarchy tree');
@@ -6380,7 +6468,7 @@ class TagManagerModal extends Modal {
         // Fix Two: Inline Case Buttons
         const caseInBtns = caseBox.createDiv({ cls: 'btm-inline-case-btns' });
         const btnUpper = caseInBtns.createEl('button', { text: 'Convert to upper', cls: 'btm-mini-case-btn' });
-        btnUpper.onclick = async () => { 
+        btnUpper.onclick = () => { 
             new BtmConfirmationModal(
                 this.app, 
                 'Bulk Convert to UPPERCASE',
@@ -6392,7 +6480,7 @@ class TagManagerModal extends Modal {
             ).open();
         };
         const btnLower = caseInBtns.createEl('button', { text: 'Convert to lower', cls: 'btm-mini-case-btn' });
-        btnLower.onclick = async () => { 
+        btnLower.onclick = () => { 
             new BtmConfirmationModal(
                 this.app, 
                 'Bulk Convert to lowercase',
@@ -6457,7 +6545,7 @@ class TagManagerModal extends Modal {
         const formatActions = formatBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
 
         const btnToInline = formatActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
-        btnToInline.onclick = async () => {
+        btnToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert to Inline Array',
@@ -6470,7 +6558,7 @@ class TagManagerModal extends Modal {
         };
 
         const btnToList = formatActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
-        btnToList.onclick = async () => {
+        btnToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert to YAML List',
@@ -6532,7 +6620,7 @@ class TagManagerModal extends Modal {
         const wikiActions = wikiBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
 
         const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
-        btnWikiToInline.onclick = async () => {
+        btnWikiToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert Wiki Links to Inline Array',
@@ -6545,7 +6633,7 @@ class TagManagerModal extends Modal {
         };
 
         const btnWikiToList = wikiActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
-        btnWikiToList.onclick = async () => {
+        btnWikiToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
                 'Convert Wiki Links to YAML List',
@@ -6594,7 +6682,7 @@ class TagManagerModal extends Modal {
 
             const mergeAllBtn = dupBox.createEl('button', { text: 'Merge all to canonical', cls: 'btm-small-btn btm-warning-btn', attr: { style: 'margin-top: auto;' } });
             setTooltip(mergeAllBtn, 'Merge all case variants into their most-used versions');
-            mergeAllBtn.onclick = async () => {
+            mergeAllBtn.onclick = () => {
                 new BtmConfirmationModal(
                     this.app,
                     'Merge Case Duplicates',
@@ -6724,9 +6812,11 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .setLimits(10, 100, 10)
                 .setValue(this.plugin.settings.maxHistorySize)
                 .setDynamicTooltip()
-                .onChange(async (value) => {
-                    this.plugin.settings.maxHistorySize = value;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.maxHistorySize = value;
+                        await this.plugin.saveSettings();
+                    });
                 }));
 
         new Setting(historySection)
@@ -6736,9 +6826,11 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .setLimits(0, 30, 1)
                 .setValue(this.plugin.settings.historyExpirationDays)
                 .setDynamicTooltip()
-                .onChange(async (value) => {
-                    this.plugin.settings.historyExpirationDays = value;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.historyExpirationDays = value;
+                        await this.plugin.saveSettings();
+                    });
                 }));
 
         new Setting(historySection)
@@ -6748,9 +6840,11 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .setLimits(1, 10, 1)
                 .setValue(this.plugin.settings.orphanThreshold)
                 .setDynamicTooltip()
-                .onChange(async (value) => {
-                    this.plugin.settings.orphanThreshold = value;
-                    await this.plugin.saveSettings();
+                .onChange((value) => {
+                    runAsync(async () => {
+                        this.plugin.settings.orphanThreshold = value;
+                        await this.plugin.saveSettings();
+                    });
                 }));
 
         new Setting(historySection)
@@ -6759,13 +6853,15 @@ class TagLowercaseSettingTab extends PluginSettingTab {
             .addButton(btn => btn
                 .setButtonText('Clear')
                 .setWarning()
-                .onClick(async () => {
-                    for (const op of this.plugin.settings.operationHistory) {
-                        await this.plugin.deleteExternalHistory(op.id);
-                    }
-                    this.plugin.settings.operationHistory = [];
-                    await this.plugin.saveSettings();
-                    new Notice('History cleared.');
+                .onClick(() => {
+                    runAsync(async () => {
+                        for (const op of this.plugin.settings.operationHistory) {
+                            await this.plugin.deleteExternalHistory(op.id);
+                        }
+                        this.plugin.settings.operationHistory = [];
+                        await this.plugin.saveSettings();
+                        new Notice('History cleared.');
+                    });
                 }));
     }
 
@@ -6779,10 +6875,12 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .addButton(btn => btn
                     .setIcon('trash')
                     .setWarning()
-                    .onClick(async () => {
-                        delete this.plugin.settings.aliases[alias];
-                        await this.plugin.saveSettings();
-                        this.renderAliases(container);
+                    .onClick(() => {
+                        runAsync(async () => {
+                            delete this.plugin.settings.aliases[alias];
+                            await this.plugin.saveSettings();
+                            this.renderAliases(container);
+                        });
                     }));
         }
 
@@ -6790,14 +6888,16 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         const aliasInput = new TextComponent(addRow).setPlaceholder('alias');
         const canonicalInput = new TextComponent(addRow).setPlaceholder('canonical');
         const addBtn = addRow.createEl('button', { text: 'Add' });
-        addBtn.onclick = async () => {
-            const a = aliasInput.getValue().replace(/^#/, '');
-            const c = canonicalInput.getValue().replace(/^#/, '');
-            if (a && c) {
-                this.plugin.settings.aliases[a] = c;
-                await this.plugin.saveSettings();
-                this.renderAliases(container);
-            }
+        addBtn.onclick = () => {
+            runAsync(async () => {
+                const a = aliasInput.getValue().replace(/^#/, '');
+                const c = canonicalInput.getValue().replace(/^#/, '');
+                if (a && c) {
+                    this.plugin.settings.aliases[a] = c;
+                    await this.plugin.saveSettings();
+                    this.renderAliases(container);
+                }
+            });
         };
     }
 
@@ -6812,10 +6912,12 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                 .addButton(btn => btn
                     .setIcon('trash')
                     .setWarning()
-                    .onClick(async () => {
-                        this.plugin.settings.protectedTags.splice(index, 1);
-                        await this.plugin.saveSettings();
-                        this.renderProtectedTags(container);
+                    .onClick(() => {
+                        runAsync(async () => {
+                            this.plugin.settings.protectedTags.splice(index, 1);
+                            await this.plugin.saveSettings();
+                            this.renderProtectedTags(container);
+                        });
                     }));
         });
 
@@ -6824,22 +6926,24 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         tagInput.inputEl.addClass('btm-flex-1');
         
         const addBtn = addRow.createEl('button', { text: 'Protect' });
-        addBtn.onclick = async () => {
-            let t = tagInput.getValue().trim();
-            if (t) {
-                if (!t.startsWith('#')) t = '#' + t;
-                
-                // Safety initialization just in case
-                if (!this.plugin.settings.protectedTags) {
-                    this.plugin.settings.protectedTags = [];
+        addBtn.onclick = () => {
+            runAsync(async () => {
+                let t = tagInput.getValue().trim();
+                if (t) {
+                    if (!t.startsWith('#')) t = '#' + t;
+                    
+                    // Safety initialization just in case
+                    if (!this.plugin.settings.protectedTags) {
+                        this.plugin.settings.protectedTags = [];
+                    }
+                    
+                    if (!this.plugin.settings.protectedTags.includes(t)) {
+                        this.plugin.settings.protectedTags.push(t);
+                        await this.plugin.saveSettings();
+                        this.renderProtectedTags(container);
+                    }
                 }
-                
-                if (!this.plugin.settings.protectedTags.includes(t)) {
-                    this.plugin.settings.protectedTags.push(t);
-                    await this.plugin.saveSettings();
-                    this.renderProtectedTags(container);
-                }
-            }
+            });
         };
     }
 }

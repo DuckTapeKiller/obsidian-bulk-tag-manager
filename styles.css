@@ -62,7 +62,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    font-size: 11px;
+    font-size: var(--font-ui-small);
     color: var(--text-muted);
     margin-top: 8px;
 }
@@ -71,43 +71,6 @@
     background: var(--background-secondary);
     padding: 2px 6px;
     border-radius: var(--radius-s);
-}
-
-/* Progress bars for standardization */
-.btm-progress-container {
-    position: relative;
-    height: 20px;
-    background: var(--background-modifier-border);
-    border-radius: var(--radius-s);
-    overflow: hidden;
-}
-
-.btm-progress-bar {
-    height: 100%;
-    border-radius: var(--radius-s);
-    transition: width 0.3s ease;
-}
-
-.btm-progress-good {
-    background: var(--color-green);
-}
-
-.btm-progress-ok {
-    background: var(--color-yellow);
-}
-
-.btm-progress-warn {
-    background: var(--color-orange);
-}
-
-.btm-progress-label {
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-normal);
 }
 
 /* Invalid Tags Section */
@@ -240,8 +203,8 @@
 }
 
 /* Better alignment for buttons with icons */
-.btm-icon-btn {
-    display: flex !important;
+body button.btm-icon-btn {
+    display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
@@ -861,11 +824,7 @@
 }
 
 /* Fix for "notes with tags in body" being too big */
-.btm-metric-box a.btm-stat-link {
-    font-size: var(--font-ui-small) !important;
-}
-
-.btm-metric-details {
+body .btm-metric-box a.btm-stat-link {
     font-size: var(--font-ui-small);
 }
 
@@ -933,11 +892,11 @@
     height: 24px;
 }
 
-.btm-confirmation-modal-window {
-    width: 360px !important;
-    min-width: 360px !important;
-    max-width: 90vw !important;
-    height: fit-content !important;
+.modal.btm-confirmation-modal-window {
+    width: 360px;
+    min-width: 360px;
+    max-width: 90vw;
+    height: fit-content;
 }
 
 .btm-confirmation-modal {
