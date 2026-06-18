@@ -1,4 +1,22 @@
-import { App, Component, DropdownComponent, Keymap, Menu, Modal, Notice, Plugin, PluginSettingTab, Setting, SuggestModal, TFile, TFolder, TextComponent, parseFrontMatterAliases, setIcon, setTooltip } from 'obsidian';
+import {
+    App,
+    Component,
+    DropdownComponent,
+    Keymap,
+    Menu,
+    Modal,
+    Notice,
+    Plugin,
+    PluginSettingTab,
+    Setting,
+    SuggestModal,
+    TFile,
+    TFolder,
+    TextComponent,
+    parseFrontMatterAliases,
+    setIcon,
+    setTooltip
+} from 'obsidian';
 
 // --- Interfaces ---
 
@@ -92,7 +110,7 @@ interface TagStandardizationStats {
     nestedFiles: { file: TFile; count: number; tags: string[] }[];
     quotedFrontmatterCount: number;
     quotedFrontmatterFiles: TFile[];
-    caseDuplicates: { canonical: string, variants: string[] }[];
+    caseDuplicates: { canonical: string; variants: string[] }[];
 }
 
 interface InvalidTagFile {
@@ -179,10 +197,7 @@ type DragManager = {
         source?: string;
         title?: string;
     };
-    onDragStart?: (
-        event: DragEvent,
-        data: { source: string; type: string; title: string; icon: string },
-    ) => void;
+    onDragStart?: (event: DragEvent, data: { source: string; type: string; title: string; icon: string }) => void;
     updateHover?: (targetEl: HTMLElement, cls: string) => void;
     setAction?: (action: string) => void;
 };
@@ -216,7 +231,7 @@ function registerDelegatedDomEvent(
     eventName: string,
     selector: string,
     handler: (event: Event, targetEl: HTMLElement) => void,
-    options?: AddEventListenerOptions | boolean,
+    options?: AddEventListenerOptions | boolean
 ) {
     const listener = (event: Event) => {
         const rawTarget = event.target;
@@ -255,8 +270,8 @@ function menuForEvent(event: MouseEvent): Menu {
 function parseCsvRenamePairs(csvText: string): { from: string; to: string }[] {
     const lines = csvText
         .split(/\r?\n/)
-        .map(l => l.trim())
-        .filter(l => l && !l.startsWith('#'));
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#'));
 
     const pairs: { from: string; to: string }[] = [];
 
@@ -265,7 +280,10 @@ function parseCsvRenamePairs(csvText: string): { from: string; to: string }[] {
         if (commaIdx === -1) continue;
 
         const from = line.substring(0, commaIdx).trim().replace(/^#/, '');
-        const to = line.substring(commaIdx + 1).trim().replace(/^#/, '');
+        const to = line
+            .substring(commaIdx + 1)
+            .trim()
+            .replace(/^#/, '');
 
         // Skip header row
         if (from === 'old_tag' && to === 'new_tag') continue;
@@ -280,19 +298,23 @@ function parseCsvRenamePairs(csvText: string): { from: string; to: string }[] {
 function parseTagDeleteList(text: string): string[] {
     return text
         .split(/\r?\n/)
-        .map(l => l.trim().replace(/^#/, ''))
-        .filter(l => l && !l.startsWith('#') && !l.startsWith('//'));
+        .map((l) => l.trim().replace(/^#/, ''))
+        .filter((l) => l && !l.startsWith('#') && !l.startsWith('//'));
 }
-
 
 class InlineTagSuggest {
     private suggestEl: HTMLElement;
     private isOpen = false;
-    
-    constructor(private app: App, private inputEl: HTMLInputElement, private containerEl: HTMLElement, private onSelect: (tag: string) => void) {
+
+    constructor(
+        private app: App,
+        private inputEl: HTMLInputElement,
+        private containerEl: HTMLElement,
+        private onSelect: (tag: string) => void
+    ) {
         this.suggestEl = containerEl.createDiv({ cls: 'btm-inline-suggestions' });
         this.suggestEl.hide();
-        
+
         inputEl.addEventListener('input', () => this.updateSuggestions());
         inputEl.addEventListener('blur', () => {
             // Delay to allow clicking on an item
@@ -315,14 +337,17 @@ class InlineTagSuggest {
 
     updateSuggestions() {
         const query = this.inputEl.value.toLowerCase().replace(/^#/, '');
-        if (!query) { this.hide(); return; }
+        if (!query) {
+            this.hide();
+            return;
+        }
 
-        const allTags = Object.keys(this.app.metadataCache.getTags() ?? {}).map(t => t.replace(/^#/, ''));
-        const matches = allTags.filter(t => t.toLowerCase().includes(query)).slice(0, 8);
+        const allTags = Object.keys(this.app.metadataCache.getTags() ?? {}).map((t) => t.replace(/^#/, ''));
+        const matches = allTags.filter((t) => t.toLowerCase().includes(query)).slice(0, 8);
 
         if (matches.length > 0) {
             this.suggestEl.empty();
-            matches.forEach(m => {
+            matches.forEach((m) => {
                 const item = this.suggestEl.createDiv({ text: '#' + m, cls: 'btm-suggest-item' });
                 item.onclick = () => {
                     this.inputEl.value = m;
@@ -347,8 +372,6 @@ export default class TagLowercasePlugin extends Plugin {
         await this.loadSettings();
         await this.purgeExpiredHistory();
 
-
-
         this.addCommand({
             id: 'open-tag-manager',
             name: 'Open settings',
@@ -358,7 +381,7 @@ export default class TagLowercasePlugin extends Plugin {
         this.addCommand({
             id: 'open-tag-manager-modal',
             name: 'Open dashboard (modal)',
-            callback: () => new TagManagerModal(this.app, this).open(),
+            callback: () => new TagManagerModal(this.app, this).open()
         });
 
         this.addCommand({
@@ -372,7 +395,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         this.addCommand({
             id: 'generate-tag-list',
-            name: 'Generate Tag List',
+            name: 'Generate tag list',
             callback: () => {
                 void this.generateTagList();
             }
@@ -380,19 +403,19 @@ export default class TagLowercasePlugin extends Plugin {
 
         this.addCommand({
             id: 'show-tag-hierarchy',
-            name: 'Show Tag Hierarchy',
+            name: 'Show tag hierarchy',
             callback: () => new TagHierarchyModal(this.app, this).open()
         });
 
         this.addCommand({
             id: 'find-orphan-tags',
-            name: 'Find Orphaned Tags',
+            name: 'Find orphaned tags',
             callback: () => new OrphanTagsModal(this.app, this).open()
         });
 
         this.addCommand({
             id: 'undo-last-operation',
-            name: 'Undo Last Tag Operation',
+            name: 'Undo last tag operation',
             callback: () => {
                 void this.undoLastOperation();
             }
@@ -424,14 +447,15 @@ export default class TagLowercasePlugin extends Plugin {
     private isBulkOperationInProgress = false;
 
     openPluginSettings() {
-        const settings = (this.app as App & { setting?: { open: () => void; openTabById?: (id: string) => void } }).setting;
+        const settings = (this.app as App & { setting?: { open: () => void; openTabById?: (id: string) => void } })
+            .setting;
         settings?.open();
         settings?.openTabById?.(this.manifest.id);
     }
 
     isTagProtected(tag: string): boolean {
         const cleanTag = tag.replace(/^#/, '');
-        return this.settings.protectedTags.some(p => {
+        return this.settings.protectedTags.some((p) => {
             const cleanP = p.replace(/^#/, '');
             if (cleanP === cleanTag) return true;
             if (cleanP.endsWith('*')) {
@@ -445,12 +469,12 @@ export default class TagLowercasePlugin extends Plugin {
     applyAliasesDebounced(file: TFile) {
         const existingTimer = this.aliasDebounceTimers.get(file.path);
         if (existingTimer) window.clearTimeout(existingTimer);
-        
+
         const timer = window.setTimeout(() => {
             void this.applyAliases(file);
             this.aliasDebounceTimers.delete(file.path);
         }, 1000);
-        
+
         this.aliasDebounceTimers.set(file.path, timer);
     }
 
@@ -463,13 +487,13 @@ export default class TagLowercasePlugin extends Plugin {
         this.settings = {
             ...DEFAULT_SETTINGS,
             ...loaded,
-            scopeFilter: { 
-                ...DEFAULT_SETTINGS.scopeFilter, 
-                ...loadedScopeFilter,
+            scopeFilter: {
+                ...DEFAULT_SETTINGS.scopeFilter,
+                ...loadedScopeFilter
             },
             aliases: {
                 ...DEFAULT_SETTINGS.aliases,
-                ...loadedAliases,
+                ...loadedAliases
             }
         };
     }
@@ -489,21 +513,37 @@ export default class TagLowercasePlugin extends Plugin {
                 const token = editorWithClickableToken.getClickableTokenAt?.(editorWithClickableToken.getCursor());
                 if (!isRecord(token) || token.type !== 'tag' || typeof token.text !== 'string') return;
                 this.setupTagWranglerMenu(menu, token.text);
-            }),
+            })
         );
 
-        registerDelegatedDomEvent(this, activeDocument, 'contextmenu', '.tag-pane-tag', (event, targetEl) => {
-            const mouseEvent = event as MouseEvent;
-            const tagText = targetEl.querySelector('.tag-pane-tag-text, .tree-item-inner-text')?.textContent?.trim();
-            if (!tagText) return;
+        registerDelegatedDomEvent(
+            this,
+            activeDocument,
+            'contextmenu',
+            '.tag-pane-tag',
+            (event, targetEl) => {
+                const mouseEvent = event as MouseEvent;
+                const tagText = targetEl
+                    .querySelector('.tag-pane-tag-text, .tree-item-inner-text')
+                    ?.textContent?.trim();
+                if (!tagText) return;
 
-            const isHierarchy = !!targetEl.parentElement?.parentElement?.querySelector('.collapse-icon');
-            this.setupTagWranglerMenu(menuForEvent(mouseEvent), tagText, { isHierarchy });
-        }, { capture: true });
+                const isHierarchy = !!targetEl.parentElement?.parentElement?.querySelector('.collapse-icon');
+                this.setupTagWranglerMenu(menuForEvent(mouseEvent), tagText, { isHierarchy });
+            },
+            { capture: true }
+        );
 
-        registerDelegatedDomEvent(this, activeDocument, 'pointerdown', '.tag-pane-tag', (_, targetEl) => {
-            targetEl.draggable = true;
-        }, { capture: true });
+        registerDelegatedDomEvent(
+            this,
+            activeDocument,
+            'pointerdown',
+            '.tag-pane-tag',
+            (_, targetEl) => {
+                targetEl.draggable = true;
+            },
+            { capture: true }
+        );
 
         registerDelegatedDomEvent(this, activeDocument, 'dragstart', '.tag-pane-tag', (event, targetEl) => {
             const dragEvent = event as DragEvent;
@@ -516,7 +556,7 @@ export default class TagLowercasePlugin extends Plugin {
                 source: 'bulk-tag-manager',
                 type: 'text',
                 title: tagText,
-                icon: 'hashtag',
+                icon: 'hashtag'
             });
         });
 
@@ -542,77 +582,116 @@ export default class TagLowercasePlugin extends Plugin {
             dragManager?.setAction?.(`Rename to ${destination}`);
         };
 
-        registerDelegatedDomEvent(this, activeDocument.body, 'dragover', '.tag-pane-tag.tree-item-self', (event, targetEl) => {
-            dropHandler(event, targetEl);
-        }, { capture: true });
+        registerDelegatedDomEvent(
+            this,
+            activeDocument.body,
+            'dragover',
+            '.tag-pane-tag.tree-item-self',
+            (event, targetEl) => {
+                dropHandler(event, targetEl);
+            },
+            { capture: true }
+        );
 
-        registerDelegatedDomEvent(this, activeDocument.body, 'dragenter', '.tag-pane-tag.tree-item-self', (event, targetEl) => {
-            dropHandler(event, targetEl);
-        }, { capture: true });
+        registerDelegatedDomEvent(
+            this,
+            activeDocument.body,
+            'dragenter',
+            '.tag-pane-tag.tree-item-self',
+            (event, targetEl) => {
+                dropHandler(event, targetEl);
+            },
+            { capture: true }
+        );
 
-        this.registerDomEvent(activeWindow, 'drop', (event) => {
-            const rawTarget = event.target;
-            if (!rawTarget) return;
+        this.registerDomEvent(
+            activeWindow,
+            'drop',
+            (event) => {
+                const rawTarget = event.target;
+                if (!rawTarget) return;
 
-            const targetNode = rawTarget as unknown as Node;
-            if (!targetNode.instanceOf(Element)) return;
+                const targetNode = rawTarget as unknown as Node;
+                if (!targetNode.instanceOf(Element)) return;
 
-            const closest = (rawTarget as Element).closest('.tag-pane-tag.tree-item-self');
-            if (!closest) return;
+                const closest = (rawTarget as Element).closest('.tag-pane-tag.tree-item-self');
+                if (!closest) return;
 
-            const closestNode = closest as unknown as Node;
-            if (!closestNode.instanceOf(HTMLElement)) return;
+                const closestNode = closest as unknown as Node;
+                if (!closestNode.instanceOf(HTMLElement)) return;
 
-            dropHandler(event, closest as HTMLElement, true);
-        }, { capture: true });
+                dropHandler(event, closest as HTMLElement, true);
+            },
+            { capture: true }
+        );
 
         const workspaceWithHoverSources = this.app.workspace as unknown as {
             registerHoverLinkSource?: (sourceId: string, options: { display: string; defaultMod?: boolean }) => void;
         };
-        workspaceWithHoverSources.registerHoverLinkSource?.(TAG_HOVER_SOURCE, { display: 'Tags View', defaultMod: true });
+        workspaceWithHoverSources.registerHoverLinkSource?.(TAG_HOVER_SOURCE, {
+            display: 'Tags View',
+            defaultMod: true
+        });
 
-        this.addChild(new TagInteractionHandler(this, {
-            hoverSource: TAG_HOVER_SOURCE,
-            selector: '.tag-pane-tag',
-            container: '.tag-container',
-            toTag: (el) => el.querySelector('.tag-pane-tag-text, .tree-item-inner-text')?.textContent?.trim() ?? null,
-            enableContextMenu: false,
-        }));
+        this.addChild(
+            new TagInteractionHandler(this, {
+                hoverSource: TAG_HOVER_SOURCE,
+                selector: '.tag-pane-tag',
+                container: '.tag-container',
+                toTag: (el) =>
+                    el.querySelector('.tag-pane-tag-text, .tree-item-inner-text')?.textContent?.trim() ?? null,
+                enableContextMenu: false
+            })
+        );
 
-        this.addChild(new TagInteractionHandler(this, {
-            hoverSource: 'preview',
-            selector: 'a.tag[href^="#"]',
-            container: '.markdown-preview-view, .markdown-embed, .workspace-leaf-content',
-            toTag: (el) => el.getAttribute('href'),
-            enableContextMenu: true,
-        }));
+        this.addChild(
+            new TagInteractionHandler(this, {
+                hoverSource: 'preview',
+                selector: 'a.tag[href^="#"]',
+                container: '.markdown-preview-view, .markdown-embed, .workspace-leaf-content',
+                toTag: (el) => el.getAttribute('href'),
+                enableContextMenu: true
+            })
+        );
 
-        this.addChild(new TagInteractionHandler(this, {
-            hoverSource: 'preview',
-            selector: '.metadata-property[data-property-key="tags"] .multi-select-pill',
-            container: '.metadata-properties',
-            toTag: (el) => el.textContent?.trim() ?? null,
-            mergeMenu: true,
-            enableContextMenu: true,
-        }));
+        this.addChild(
+            new TagInteractionHandler(this, {
+                hoverSource: 'preview',
+                selector: '.metadata-property[data-property-key="tags"] .multi-select-pill',
+                container: '.metadata-properties',
+                toTag: (el) => el.textContent?.trim() ?? null,
+                mergeMenu: true,
+                enableContextMenu: true
+            })
+        );
 
-        this.addChild(new TagInteractionHandler(this, {
-            hoverSource: 'editor',
-            selector: 'span.cm-hashtag',
-            container: '.markdown-source-view',
-            toTag: (el) => {
-                if (el.classList.contains('cm-formatting')) return null;
-                let tagName = el.textContent ?? '';
-                for (let previous = el.previousElementSibling; previous?.matches('span.cm-hashtag:not(.cm-formatting)'); previous = previous.previousElementSibling) {
-                    tagName = `${previous.textContent ?? ''}${tagName}`;
-                }
-                for (let next = el.nextElementSibling; next?.matches('span.cm-hashtag:not(.cm-formatting)'); next = next.nextElementSibling) {
-                    tagName += next.textContent ?? '';
-                }
-                return tagName || null;
-            },
-            enableContextMenu: false,
-        }));
+        this.addChild(
+            new TagInteractionHandler(this, {
+                hoverSource: 'editor',
+                selector: 'span.cm-hashtag',
+                container: '.markdown-source-view',
+                toTag: (el) => {
+                    if (el.classList.contains('cm-formatting')) return null;
+                    let tagName = el.textContent ?? '';
+                    for (
+                        let previous = el.previousElementSibling;
+                        previous?.matches('span.cm-hashtag:not(.cm-formatting)');
+                        previous = previous.previousElementSibling
+                    ) {
+                        tagName = `${previous.textContent ?? ''}${tagName}`;
+                    }
+                    for (
+                        let next = el.nextElementSibling;
+                        next?.matches('span.cm-hashtag:not(.cm-formatting)');
+                        next = next.nextElementSibling
+                    ) {
+                        tagName += next.textContent ?? '';
+                    }
+                    return tagName || null;
+                },
+                enableContextMenu: false
+            })
+        );
 
         const rebuildTagPages = () => {
             this.pageAliases.clear();
@@ -632,7 +711,7 @@ export default class TagLowercasePlugin extends Plugin {
             this.registerEvent(
                 this.app.metadataCache.on('changed', (file, _data, cache) => {
                     this.updateTagPage(file, cache?.frontmatter);
-                }),
+                })
             );
 
             this.registerEvent(
@@ -640,7 +719,7 @@ export default class TagLowercasePlugin extends Plugin {
                     if (file instanceof TFile) {
                         this.updateTagPage(file);
                     }
-                }),
+                })
             );
         });
     }
@@ -656,7 +735,7 @@ export default class TagLowercasePlugin extends Plugin {
     async openTagPage(file: TFile, isNew: boolean, newLeaf: boolean) {
         const openState = {
             eState: isNew ? { rename: 'all' } : { focus: true },
-            ...(isNew ? { state: { mode: 'source' } } : {}),
+            ...(isNew ? { state: { mode: 'source' } } : {})
         };
         await this.app.workspace.getLeaf(newLeaf).openFile(file, openState);
     }
@@ -677,12 +756,10 @@ export default class TagLowercasePlugin extends Plugin {
             const path = vaultWithAvailablePath.getAvailablePath
                 ? vaultWithAvailablePath.getAvailablePath(`${folderPrefix}${baseName}`, 'md')
                 : `${folderPrefix}${baseName}.md`;
-            file = await this.app.vault.create(path, [
-                '---',
-                `Aliases: [ ${JSON.stringify('#' + cleanTag)} ]`,
-                '---',
-                '',
-            ].join('\n'));
+            file = await this.app.vault.create(
+                path,
+                ['---', `Aliases: [ ${JSON.stringify('#' + cleanTag)} ]`, '---', ''].join('\n')
+            );
         }
 
         eventPayload.file = file;
@@ -691,8 +768,9 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     updateTagPage(file: TFile, frontmatter?: Record<string, unknown>) {
-        const tags = (parseFrontMatterAliases(frontmatter)?.filter((alias) => /^#[^\s]+$/.test(alias)) ?? [])
-            .map((alias) => alias.replace(/^##+/, '#'));
+        const tags = (parseFrontMatterAliases(frontmatter)?.filter((alias) => /^#[^\s]+$/.test(alias)) ?? []).map(
+            (alias) => alias.replace(/^##+/, '#')
+        );
 
         const previousTags = this.pageAliases.get(file) ?? [];
         if (previousTags.length) {
@@ -716,7 +794,7 @@ export default class TagLowercasePlugin extends Plugin {
         this.pageAliases.set(file, tags);
         for (const tag of tags) {
             const key = this.canonicalTag(tag);
-            const tagSet = this.tagPages.get(key) ?? Object.assign(new Set<TFile>(), { tag }) as TagPageFileSet;
+            const tagSet = this.tagPages.get(key) ?? (Object.assign(new Set<TFile>(), { tag }) as TagPageFileSet);
             tagSet.add(file);
             tagSet.tag = `#${tag.replace(/^#/, '')}`;
             this.tagPages.set(key, tagSet);
@@ -733,12 +811,12 @@ export default class TagLowercasePlugin extends Plugin {
             });
             const frontmatterTags = [
                 ...this.extractFrontmatterTags(cache?.frontmatter?.tags),
-                ...this.extractFrontmatterTags(cache?.frontmatter?.tag),
+                ...this.extractFrontmatterTags(cache?.frontmatter?.tag)
             ];
             const frontmatterMatches = frontmatterTags.some((tag) => {
-                    const raw = tag.replace(/^#/, '').toLowerCase();
-                    return raw === cleanTag.toLowerCase() || raw.startsWith(`${cleanTag.toLowerCase()}/`);
-                });
+                const raw = tag.replace(/^#/, '').toLowerCase();
+                return raw === cleanTag.toLowerCase() || raw.startsWith(`${cleanTag.toLowerCase()}/`);
+            });
 
             return inlineMatches || frontmatterMatches;
         });
@@ -760,7 +838,7 @@ export default class TagLowercasePlugin extends Plugin {
             `Delete #${cleanTag} and any child tags in the current scope?`,
             async () => {
                 await this.deleteTags([cleanTag]);
-            },
+            }
         ).open();
     }
 
@@ -769,60 +847,106 @@ export default class TagLowercasePlugin extends Plugin {
         const tagPage = this.tagPage(cleanTag);
         const search = getGlobalSearch(this.app);
         const query = search?.getGlobalSearchQuery?.() ?? '';
-        const smartRandom = (this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins?.['smart-random-note'];
+        const smartRandom = (this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins?.[
+            'smart-random-note'
+        ];
 
-        menu.addItem((item) => item.setIcon('pencil').setTitle(`Rename #${cleanTag}`).onClick(() => {
-            new TagRenamePromptModal(this.app, this, cleanTag).open();
-        }));
-        menu.addItem((item) => item.setIcon('trash').setTitle(`Delete #${cleanTag}`).onClick(() => {
-            this.confirmDeleteTag(cleanTag);
-        }));
+        menu.addItem((item) =>
+            item
+                .setIcon('pencil')
+                .setTitle(`Rename #${cleanTag}`)
+                .onClick(() => {
+                    new TagRenamePromptModal(this.app, this, cleanTag).open();
+                })
+        );
+        menu.addItem((item) =>
+            item
+                .setIcon('trash')
+                .setTitle(`Delete #${cleanTag}`)
+                .onClick(() => {
+                    this.confirmDeleteTag(cleanTag);
+                })
+        );
 
         if (tagPage) {
-            menu.addItem((item) => item.setIcon('popup-open').setTitle('Open tag page').onClick((event) => {
-                void this.openTagPage(tagPage, false, !!Keymap.isModEvent(event));
-            }));
+            menu.addItem((item) =>
+                item
+                    .setIcon('popup-open')
+                    .setTitle('Open tag page')
+                    .onClick((event) => {
+                        void this.openTagPage(tagPage, false, !!Keymap.isModEvent(event));
+                    })
+            );
         } else {
-            menu.addItem((item) => item.setIcon('create-new').setTitle('Create tag page').onClick((event) => {
-                void this.createTagPage(cleanTag, !!Keymap.isModEvent(event));
-            }));
+            menu.addItem((item) =>
+                item
+                    .setIcon('create-new')
+                    .setTitle('Create tag page')
+                    .onClick((event) => {
+                        void this.createTagPage(cleanTag, !!Keymap.isModEvent(event));
+                    })
+            );
         }
 
         if (search?.openGlobalSearch) {
-            menu.addItem((item) => item.setIcon('magnifying-glass').setTitle(`New search for #${cleanTag}`).onClick(() => {
-                search.openGlobalSearch(`tag:#${cleanTag}`);
-            }));
+            menu.addItem((item) =>
+                item
+                    .setIcon('magnifying-glass')
+                    .setTitle(`New search for #${cleanTag}`)
+                    .onClick(() => {
+                        search.openGlobalSearch(`tag:#${cleanTag}`);
+                    })
+            );
 
             if (query) {
-                menu.addItem((item) => item.setIcon('sheets-in-box').setTitle(`Require #${cleanTag} in search`).onClick(() => {
-                    search.openGlobalSearch(`${query} tag:#${cleanTag}`.trim());
-                }));
+                menu.addItem((item) =>
+                    item
+                        .setIcon('sheets-in-box')
+                        .setTitle(`Require #${cleanTag} in search`)
+                        .onClick(() => {
+                            search.openGlobalSearch(`${query} tag:#${cleanTag}`.trim());
+                        })
+                );
             }
 
-            menu.addItem((item) => item.setIcon('crossed-star').setTitle(`Exclude #${cleanTag} from search`).onClick(() => {
-                search.openGlobalSearch(`${query} -tag:#${cleanTag}`.trim());
-            }));
+            menu.addItem((item) =>
+                item
+                    .setIcon('crossed-star')
+                    .setTitle(`Exclude #${cleanTag} from search`)
+                    .onClick(() => {
+                        search.openGlobalSearch(`${query} -tag:#${cleanTag}`.trim());
+                    })
+            );
         }
 
         if (smartRandom) {
-            menu.addItem((item) => item.setIcon('dice').setTitle('Open random note').onClick(() => {
-                void this.openRandomTaggedNote(cleanTag);
-            }));
+            menu.addItem((item) =>
+                item
+                    .setIcon('dice')
+                    .setTitle('Open random note')
+                    .onClick(() => {
+                        void this.openRandomTaggedNote(cleanTag);
+                    })
+            );
         }
 
         this.app.workspace.trigger('tag-wrangler:contextmenu', menu, cleanTag, {
             search,
             query,
             isHierarchy: !!context.isHierarchy,
-            tagPage,
+            tagPage
         });
 
         menu.addSeparator();
-        menu.addItem((item) => item.setIcon('settings').setTitle('Open settings').onClick(() => {
-            this.openPluginSettings();
-        }));
+        menu.addItem((item) =>
+            item
+                .setIcon('settings')
+                .setTitle('Open settings')
+                .onClick(() => {
+                    this.openPluginSettings();
+                })
+        );
     }
-
 
     extractFrontmatterTags(value: unknown): string[] {
         if (Array.isArray(value)) {
@@ -846,32 +970,36 @@ export default class TagLowercasePlugin extends Plugin {
 
         const { includeFolders, excludeFolders, filePattern } = this.settings.scopeFilter;
 
-        const normalizeFolder = (f: string) => f.endsWith('/') ? f : f + '/';
+        const normalizeFolder = (f: string) => (f.endsWith('/') ? f : f + '/');
 
         if (includeFolders.length > 0) {
             const normalizedIncludes = includeFolders.map(normalizeFolder);
-            files = files.filter(f => normalizedIncludes.some(folder => f.path.startsWith(folder) || f.path === folder.slice(0, -1)));
+            files = files.filter((f) =>
+                normalizedIncludes.some((folder) => f.path.startsWith(folder) || f.path === folder.slice(0, -1))
+            );
         }
 
         if (excludeFolders.length > 0) {
             const normalizedExcludes = excludeFolders.map(normalizeFolder);
-            files = files.filter(f => !normalizedExcludes.some(folder => f.path.startsWith(folder) || f.path === folder.slice(0, -1)));
+            files = files.filter(
+                (f) => !normalizedExcludes.some((folder) => f.path.startsWith(folder) || f.path === folder.slice(0, -1))
+            );
         }
 
         if (filePattern) {
             // Issue 12: Basic ReDoS protection
             const looksComplex =
-                filePattern.length > 100 ||
-                /([+*?])\1+/.test(filePattern) ||
-                /\([^)]*[+*][^)]*\)\+/.test(filePattern);
+                filePattern.length > 100 || /([+*?])\1+/.test(filePattern) || /\([^)]*[+*][^)]*\)\+/.test(filePattern);
 
             if (looksComplex) {
                 console.warn('File pattern is too complex, skipping regex filter.');
             } else {
                 try {
                     const regex = new RegExp(filePattern);
-                    files = files.filter(f => regex.test(f.path));
-                } catch { /* invalid regex, ignore */ }
+                    files = files.filter((f) => regex.test(f.path));
+                } catch {
+                    /* invalid regex, ignore */
+                }
             }
         }
 
@@ -887,7 +1015,7 @@ export default class TagLowercasePlugin extends Plugin {
             timestamp: Date.now(),
             type: record.type,
             description: record.description,
-            changes: record.changes.map(c => ({ path: c.path })),
+            changes: record.changes.map((c) => ({ path: c.path })),
             useExternalStorage: true
         };
 
@@ -904,7 +1032,7 @@ export default class TagLowercasePlugin extends Plugin {
             }
 
             // Save the manifest (file paths) externally
-            const manifest = record.changes.map(c => ({ path: c.path }));
+            const manifest = record.changes.map((c) => ({ path: c.path }));
             await this.app.vault.adapter.write(`${historyDir}/manifest.json`, JSON.stringify(manifest));
             fullRecord.useExternalManifest = true;
             fullRecord.changes = []; // Clear paths from data.json
@@ -941,7 +1069,7 @@ export default class TagLowercasePlugin extends Plugin {
     async purgeExpiredHistory() {
         if (this.settings.historyExpirationDays <= 0) return;
 
-        const cutoff = Date.now() - (this.settings.historyExpirationDays * 24 * 60 * 60 * 1000);
+        const cutoff = Date.now() - this.settings.historyExpirationDays * 24 * 60 * 60 * 1000;
         const toKeep = [];
         const toDelete = [];
 
@@ -1013,7 +1141,7 @@ export default class TagLowercasePlugin extends Plugin {
         for (let i = 0; i < fileChanges.length; i++) {
             const change = fileChanges[i];
             const file = this.app.vault.getAbstractFileByPath(change.path);
-            
+
             if (file instanceof TFile) {
                 try {
                     let beforeContent: string;
@@ -1081,8 +1209,8 @@ export default class TagLowercasePlugin extends Plugin {
 
                                 const processValue = (val: unknown): unknown => {
                                     if (typeof val === 'string') return val.trim();
-                                    if (Array.isArray(val)) return val.map(v => processValue(v));
-                                    
+                                    if (Array.isArray(val)) return val.map((v) => processValue(v));
+
                                     // Recursive walk for nested objects, excluding Dates
                                     if (isRecord(val) && !(val instanceof Date)) {
                                         for (const k in val) val[k] = processValue(val[k]);
@@ -1107,7 +1235,7 @@ export default class TagLowercasePlugin extends Plugin {
                         // Throttle: Yield to event loop every 50 files based on attempts
                         if (attemptCount % 50 === 0) {
                             progressModal.update(attemptCount);
-                            await new Promise(resolve => window.setTimeout(resolve, 5));
+                            await new Promise((resolve) => window.setTimeout(resolve, 5));
                         } else {
                             progressModal.update(attemptCount);
                         }
@@ -1117,11 +1245,13 @@ export default class TagLowercasePlugin extends Plugin {
                         await this.addToHistory({
                             type: 'standardise-properties',
                             description: `Clean frontmatter formatting (${changes.length} files)`,
-                            changes,
+                            changes
                         });
                     }
-                    new Notice(`Finished: ${changes.length} files changed. ${errors.length > 0 ? `(${errors.length} skipped due to errors)` : ''}`);
-                    
+                    new Notice(
+                        `Finished: ${changes.length} files changed. ${errors.length > 0 ? `(${errors.length} skipped due to errors)` : ''}`
+                    );
+
                     if (errors.length > 0) {
                         new BtmErrorReportModal(this.app, this, 'Standardise Errors', errors).open();
                     }
@@ -1144,7 +1274,7 @@ export default class TagLowercasePlugin extends Plugin {
         const lines = originalFm.split('\n');
         let isModified = false;
 
-        const fixedLines = lines.map(line => {
+        const fixedLines = lines.map((line) => {
             // Regex targets lines like: Key: Text with a: inside
             // Group 1: The Key (e.g., "Resumen")
             // Group 2: The invalid unquoted value (contains : )
@@ -1175,7 +1305,7 @@ export default class TagLowercasePlugin extends Plugin {
             await this.addToHistory({
                 type: 'fix-invalid-mapping',
                 description: `Fix invalid frontmatter mapping (${file.path})`,
-                changes: [{ path: file.path, before, after: newContent }],
+                changes: [{ path: file.path, before, after: newContent }]
             });
         }
     }
@@ -1248,7 +1378,6 @@ export default class TagLowercasePlugin extends Plugin {
 
         return changes;
     }
-
 
     async runConversionWithPreview() {
         const preview = await this.previewConversion();
@@ -1360,8 +1489,7 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
-        const sortedTags = Object.keys(tags)
-            .sort((a, b) => a.localeCompare(b));
+        const sortedTags = Object.keys(tags).sort((a, b) => a.localeCompare(b));
 
         const fileContent = `# All Tags\n\n${sortedTags.join('\n')}\n`;
         const fileName = 'All Tags.md'; // Could be made configurable in settings later
@@ -1397,6 +1525,74 @@ export default class TagLowercasePlugin extends Plugin {
         return false;
     }
 
+    /**
+     * Remove inline tag occurrences from note text WITHOUT disturbing any surrounding
+     * content. This is the safety-critical counterpart to tag *deletion*: unlike renaming
+     * (which swaps a tag for another and leaves spacing untouched), deleting a tag leaves a
+     * gap that must be tidied — but only the gap, never the rest of the document.
+     *
+     * Guarantees:
+     *  - Only the matched `#tag` and AT MOST ONE directly-adjacent inline space (or tab) are
+     *    removed. The adjacent space removed is the one that separated the tag from its
+     *    neighbour, so words never get glued together and no double-space artifact is left.
+     *  - Newlines are never removed and indentation is never altered. A tag that begins a
+     *    line's content keeps that line's leading whitespace exactly as-is.
+     *  - Every other byte of the document (code blocks, YAML, lists, prose) is copied
+     *    verbatim. There is deliberately NO global whitespace pass over the body.
+     *
+     * @param data       full note text
+     * @param tagRegex   global regex whose group 1 is the `(^|\s)` prefix, followed by `#`
+     *                   and the captured tag; the trailing boundary is a non-consuming
+     *                   lookahead so `end` lands immediately after the tag name.
+     * @param shouldSkip predicate given the offset of `#`; return true to leave a match
+     *                   untouched (used to skip frontmatter and code blocks).
+     */
+    private stripInlineTags(
+        data: string,
+        tagRegex: RegExp,
+        shouldSkip: (hashOffset: number) => boolean
+    ): { result: string; modified: boolean } {
+        tagRegex.lastIndex = 0;
+        const removals: { start: number; end: number }[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = tagRegex.exec(data)) !== null) {
+            // Guard against a zero-width match ever stalling the loop.
+            if (m[0].length === 0) {
+                tagRegex.lastIndex++;
+                continue;
+            }
+            const prefixLen = m[1] ? m[1].length : 0; // '' for ^, otherwise a single \s char
+            const hashOffset = m.index + prefixLen; // position of '#'
+            const tagEnd = m.index + m[0].length; // position just after the tag name
+            if (shouldSkip(hashOffset)) continue;
+            removals.push({ start: hashOffset, end: tagEnd });
+        }
+
+        if (removals.length === 0) return { result: data, modified: false };
+
+        let result = '';
+        let cursor = 0;
+        for (const { start, end } of removals) {
+            result += data.slice(cursor, start); // text up to '#', incl. any indentation
+            const lastNl = Math.max(result.lastIndexOf('\n'), result.lastIndexOf('\r'));
+            const tagIsFirstOnLine = result.slice(lastNl + 1).trim().length === 0;
+            let next = end;
+            if (tagIsFirstOnLine) {
+                // Tag opens the line's content: preserve indentation, drop one trailing
+                // inline space so the following token slides into the tag's place.
+                const c = data.charAt(next);
+                if (c === ' ' || c === '\t') next++;
+            } else {
+                // Text precedes the tag: drop the single inline space that separated them.
+                const last = result.charAt(result.length - 1);
+                if (last === ' ' || last === '\t') result = result.slice(0, -1);
+            }
+            cursor = next;
+        }
+        result += data.slice(cursor);
+        return { result, modified: true };
+    }
+
     async renameTag(oldTag: string, newTag: string) {
         const files = this.getFilteredFiles();
         const changes: FileChange[] = [];
@@ -1418,7 +1614,10 @@ export default class TagLowercasePlugin extends Plugin {
 
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const escapedSearch = escapeRegExp(search);
-        const tagRegex = new RegExp(`(^|\\s)(#)(${escapedSearch}(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`, 'gu');
+        const tagRegex = new RegExp(
+            `(^|\\s)(#)(${escapedSearch}(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`,
+            'gu'
+        );
 
         // First pass: find files that contain the tag
         const matchingFiles: TFile[] = [];
@@ -1439,14 +1638,14 @@ export default class TagLowercasePlugin extends Plugin {
                 });
             }
             if (cache?.frontmatter?.tag) {
-                const fmTags = Array.isArray(cache.frontmatter.tag)
-                    ? cache.frontmatter.tag
-                    : [cache.frontmatter.tag];
-                hasFrontmatterTag = hasFrontmatterTag || fmTags.some((t: string) => {
-                    if (typeof t !== 'string') return false;
-                    const raw = t.startsWith('#') ? t.substring(1) : t;
-                    return raw === search || raw.startsWith(search + '/');
-                });
+                const fmTags = Array.isArray(cache.frontmatter.tag) ? cache.frontmatter.tag : [cache.frontmatter.tag];
+                hasFrontmatterTag =
+                    hasFrontmatterTag ||
+                    fmTags.some((t: string) => {
+                        if (typeof t !== 'string') return false;
+                        const raw = t.startsWith('#') ? t.substring(1) : t;
+                        return raw === search || raw.startsWith(search + '/');
+                    });
             }
 
             // Check inline tags
@@ -1525,7 +1724,7 @@ export default class TagLowercasePlugin extends Plugin {
                     const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
                         if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
                         if (this.isTagProtected(captured)) return m;
-                        
+
                         modified = true;
                         // Handle child tags: #old/child → #new/child
                         if (captured === search) {
@@ -1567,16 +1766,15 @@ export default class TagLowercasePlugin extends Plugin {
         new Notice(`Renamed #${search} → #${replace} in ${changes.length} files.`);
     }
 
-
     async mergeTags(sources: string[], target: string) {
         const targetClean = target.startsWith('#') ? target.substring(1) : target;
         const sourcesClean = sources
-            .map(s => s.startsWith('#') ? s.substring(1) : s)
-            .filter(s => s && s !== targetClean);
+            .map((s) => (s.startsWith('#') ? s.substring(1) : s))
+            .filter((s) => s && s !== targetClean);
 
-        const protectedSources = sourcesClean.filter(s => this.isTagProtected(s));
+        const protectedSources = sourcesClean.filter((s) => this.isTagProtected(s));
         if (protectedSources.length > 0) {
-            new Notice(`⚠️ Protected tags cannot be merged/moved: ${protectedSources.map(s => '#' + s).join(', ')}`);
+            new Notice(`⚠️ Protected tags cannot be merged/moved: ${protectedSources.map((s) => '#' + s).join(', ')}`);
             return;
         }
 
@@ -1593,9 +1791,9 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             const cache = this.app.metadataCache.getFileCache(file);
             if (cache?.tags) {
-                cache.tags.forEach(t => tagsInScope.add(
-                    (t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase()
-                ));
+                cache.tags.forEach((t) =>
+                    tagsInScope.add((t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase())
+                );
             }
             if (cache?.frontmatter) {
                 const extract = (val: unknown) => {
@@ -1626,7 +1824,9 @@ export default class TagLowercasePlugin extends Plugin {
         }
 
         if (missingTags.length > 0) {
-            new Notice(`Merge aborted: ${missingTags.join(', ')} not found in current scope. Check for typos or scope filters.`);
+            new Notice(
+                `Merge aborted: ${missingTags.join(', ')} not found in current scope. Check for typos or scope filters.`
+            );
             return;
         }
 
@@ -1640,8 +1840,11 @@ export default class TagLowercasePlugin extends Plugin {
 
         // Build regex that matches any of the source tags
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const sourcePatterns = sourcesClean.map(s => escapeRegExp(s)).join('|');
-        const tagRegex = new RegExp(`(^|\\s)(#)((?:${sourcePatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`, 'gu');
+        const sourcePatterns = sourcesClean.map((s) => escapeRegExp(s)).join('|');
+        const tagRegex = new RegExp(
+            `(^|\\s)(#)((?:${sourcePatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`,
+            'gu'
+        );
 
         for (const file of files) {
             tagRegex.lastIndex = 0; // L05: Reset regex state at loop start
@@ -1686,8 +1889,11 @@ export default class TagLowercasePlugin extends Plugin {
                                         uniqueTags.push(t);
                                     }
                                 }
-                                
-                                if (uniqueTags.length !== fm[key].length || uniqueTags.some((t: string, i: number) => t !== fm[key][i])) {
+
+                                if (
+                                    uniqueTags.length !== fm[key].length ||
+                                    uniqueTags.some((t: string, i: number) => t !== fm[key][i])
+                                ) {
                                     fm[key] = uniqueTags;
                                     modified = true;
                                 }
@@ -1726,13 +1932,19 @@ export default class TagLowercasePlugin extends Plugin {
                         }
                         return match;
                     });
-                    
+
                     // Collapse consecutive identical tags (e.g. #target #target -> #target)
                     // This handles the "merge creates duplicates" issue in the body
                     if (modified) {
                         const targetTagEscaped = escapeRegExp(targetClean);
-                        // Matches #target followed by whitespace/punctuation and then #target again
-                        const duoRegex = new RegExp(`(#${targetTagEscaped})(\\s*[,;]?\\s*)(#${targetTagEscaped})(?=[\\s,;]|$|[^\\p{L}\\p{N}_-])`, 'gu');
+                        // Matches #target followed by inline whitespace/punctuation and then
+                        // #target again. Only inline spaces/tabs are allowed between them
+                        // ([ \t], never \s) so two identical tags on separate lines are left
+                        // alone instead of being merged onto one line.
+                        const duoRegex = new RegExp(
+                            `(#${targetTagEscaped})([ \\t]*[,;]?[ \\t]*)(#${targetTagEscaped})(?=[\\s,;]|$|[^\\p{L}\\p{N}_-])`,
+                            'gu'
+                        );
                         let prevData;
                         do {
                             prevData = newData;
@@ -1764,7 +1976,7 @@ export default class TagLowercasePlugin extends Plugin {
         if (changes.length > 0) {
             await this.addToHistory({
                 type: 'merge',
-                description: `Merge ${sourcesClean.map(s => '#' + s).join(', ')} → #${targetClean}`,
+                description: `Merge ${sourcesClean.map((s) => '#' + s).join(', ')} → #${targetClean}`,
                 changes
             });
             new Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
@@ -1774,7 +1986,10 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async nestTags(parent: string, children: string[]): Promise<void> {
-        const parentClean = parent.replace(/^#/, '').replace(/^\/+|\/+$/g, '').trim();
+        const parentClean = parent
+            .replace(/^#/, '')
+            .replace(/^\/+|\/+$/g, '')
+            .trim();
         if (!parentClean) {
             new Notice('Please provide a parent tag.');
             return;
@@ -1786,24 +2001,22 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
-        const childrenClean = children
-            .map(c => c.replace(/^#/, '').trim())
-            .filter(c => c && c !== parentClean);
+        const childrenClean = children.map((c) => c.replace(/^#/, '').trim()).filter((c) => c && c !== parentClean);
 
         if (childrenClean.length === 0) {
             new Notice('No valid child tags to nest.');
             return;
         }
 
-        const protectedChildren = childrenClean.filter(c => this.isTagProtected(c));
+        const protectedChildren = childrenClean.filter((c) => this.isTagProtected(c));
         if (protectedChildren.length > 0) {
-            new Notice(`⚠️ Protected tags cannot be nested: ${protectedChildren.map(c => '#' + c).join(', ')}`);
+            new Notice(`⚠️ Protected tags cannot be nested: ${protectedChildren.map((c) => '#' + c).join(', ')}`);
             return;
         }
 
         // Filter out tags already nested under the parent
-        const alreadyNested = childrenClean.filter(c => c.startsWith(parentClean + '/'));
-        const toNest = childrenClean.filter(c => !c.startsWith(parentClean + '/'));
+        const alreadyNested = childrenClean.filter((c) => c.startsWith(parentClean + '/'));
+        const toNest = childrenClean.filter((c) => !c.startsWith(parentClean + '/'));
 
         if (alreadyNested.length > 0) {
             new Notice(`Skipping ${alreadyNested.length} tag(s) already under #${parentClean}.`);
@@ -1826,9 +2039,9 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             const cache = this.app.metadataCache.getFileCache(file);
             if (cache?.tags) {
-                cache.tags.forEach(t => tagsInScope.add(
-                    (t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase()
-                ));
+                cache.tags.forEach((t) =>
+                    tagsInScope.add((t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase())
+                );
             }
             if (cache?.frontmatter) {
                 const extract = (val: unknown) => {
@@ -1859,7 +2072,9 @@ export default class TagLowercasePlugin extends Plugin {
         }
 
         if (missingTags.length > 0) {
-            new Notice(`Nest aborted: ${missingTags.join(', ')} not found in current scope. Check for typos or scope filters.`);
+            new Notice(
+                `Nest aborted: ${missingTags.join(', ')} not found in current scope. Check for typos or scope filters.`
+            );
             return;
         }
 
@@ -1874,8 +2089,11 @@ export default class TagLowercasePlugin extends Plugin {
 
         // Build a single regex that matches any of the child tags
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const childPatterns = toNest.map(s => escapeRegExp(s)).join('|');
-        const tagRegex = new RegExp(`(^|\\s)(#)((?:${childPatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`, 'gu');
+        const childPatterns = toNest.map((s) => escapeRegExp(s)).join('|');
+        const tagRegex = new RegExp(
+            `(^|\\s)(#)((?:${childPatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`,
+            'gu'
+        );
 
         for (const file of files) {
             tagRegex.lastIndex = 0;
@@ -1914,15 +2132,24 @@ export default class TagLowercasePlugin extends Plugin {
                             const seen = new Set<string>();
                             for (const t of newTags) {
                                 const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
-                                if (!seen.has(clean)) { seen.add(clean); uniqueTags.push(t); }
+                                if (!seen.has(clean)) {
+                                    seen.add(clean);
+                                    uniqueTags.push(t);
+                                }
                             }
-                            if (uniqueTags.length !== fm[key].length || uniqueTags.some((t: string, i: number) => t !== fm[key][i])) {
+                            if (
+                                uniqueTags.length !== fm[key].length ||
+                                uniqueTags.some((t: string, i: number) => t !== fm[key][i])
+                            ) {
                                 fm[key] = uniqueTags;
                                 modified = true;
                             }
                         } else if (typeof fm[key] === 'string') {
                             const newTag = processSingleTag(fm[key]);
-                            if (newTag !== fm[key]) { fm[key] = newTag; modified = true; }
+                            if (newTag !== fm[key]) {
+                                fm[key] = newTag;
+                                modified = true;
+                            }
                         }
                     };
 
@@ -1980,7 +2207,7 @@ export default class TagLowercasePlugin extends Plugin {
         if (changes.length > 0) {
             await this.addToHistory({
                 type: 'nest',
-                description: `Nest ${toNest.map(s => '#' + s).join(', ')} → #${parentClean}/...`,
+                description: `Nest ${toNest.map((s) => '#' + s).join(', ')} → #${parentClean}/...`,
                 changes
             });
             new Notice(`Nested ${toNest.length} tags under #${parentClean}. ${changes.length} files changed.`);
@@ -1991,23 +2218,23 @@ export default class TagLowercasePlugin extends Plugin {
 
     async renameTagBatch(pairs: { from: string; to: string }[]) {
         const validPairs = pairs
-            .map(p => ({
+            .map((p) => ({
                 from: p.from.replace(/^#/, '').trim(),
                 to: p.to.replace(/^#/, '').trim()
             }))
-            .filter(p => p.from && p.to && p.from !== p.to);
+            .filter((p) => p.from && p.to && p.from !== p.to);
 
         if (validPairs.length === 0) {
             new Notice('No valid rename pairs found.');
             return;
         }
 
-        const protectedPairs = validPairs.filter(p => this.isTagProtected(p.from));
+        const protectedPairs = validPairs.filter((p) => this.isTagProtected(p.from));
         if (protectedPairs.length > 0) {
-            new Notice(`⚠️ Protected tags skipped: ${protectedPairs.map(p => '#' + p.from).join(', ')}`);
+            new Notice(`⚠️ Protected tags skipped: ${protectedPairs.map((p) => '#' + p.from).join(', ')}`);
         }
 
-        const executablePairs = validPairs.filter(p => !this.isTagProtected(p.from));
+        const executablePairs = validPairs.filter((p) => !this.isTagProtected(p.from));
         if (executablePairs.length === 0) {
             new Notice('All pairs are protected. Nothing to rename.');
             return;
@@ -2021,7 +2248,7 @@ export default class TagLowercasePlugin extends Plugin {
             }
         }
 
-        const renameMap = new Map<string, string>(executablePairs.map(p => [p.from, p.to]));
+        const renameMap = new Map<string, string>(executablePairs.map((p) => [p.from, p.to]));
 
         const files = this.getFilteredFiles();
         const changes: FileChange[] = [];
@@ -2031,9 +2258,9 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             const cache = this.app.metadataCache.getFileCache(file);
             if (cache?.tags) {
-                cache.tags.forEach(t => tagsInScope.add(
-                    (t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase()
-                ));
+                cache.tags.forEach((t) =>
+                    tagsInScope.add((t.tag.startsWith('#') ? t.tag.substring(1) : t.tag).toLowerCase())
+                );
             }
             if (cache?.frontmatter) {
                 const extract = (val: unknown) => {
@@ -2056,18 +2283,21 @@ export default class TagLowercasePlugin extends Plugin {
             }
         }
 
-        const missingTags = executablePairs
-            .map(p => p.from)
-            .filter(f => !tagsInScope.has(f.toLowerCase()));
+        const missingTags = executablePairs.map((p) => p.from).filter((f) => !tagsInScope.has(f.toLowerCase()));
 
         if (missingTags.length > 0) {
-            new Notice(`Warning: ${missingTags.length} source tag(s) not found in scope: ${missingTags.slice(0, 5).map(t => '#' + t).join(', ')}${missingTags.length > 5 ? '…' : ''}. Continuing with found tags.`);
+            new Notice(
+                `Warning: ${missingTags.length} source tag(s) not found in scope: ${missingTags
+                    .slice(0, 5)
+                    .map((t) => '#' + t)
+                    .join(', ')}${missingTags.length > 5 ? '…' : ''}. Continuing with found tags.`
+            );
         }
 
         new Notice(`Renaming ${executablePairs.length} tags...`);
 
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const sourcePatterns = executablePairs.map(p => escapeRegExp(p.from)).join('|');
+        const sourcePatterns = executablePairs.map((p) => escapeRegExp(p.from)).join('|');
         const tagRegex = new RegExp(
             `(^|\\s)(#)((?:${sourcePatterns})(?:\\/[\\p{L}\\p{N}_\\-]+)*)(?=[\\s]|$|[^\\p{L}\\p{N}_\\/-])`,
             'gu'
@@ -2091,10 +2321,15 @@ export default class TagLowercasePlugin extends Plugin {
                         const raw = hasHash ? t.substring(1) : t;
                         if (this.isTagProtected(raw)) return t;
                         for (const [from, to] of renameMap) {
-                            if (raw === from) { modified = true; return hasHash ? '#' + to : to; }
+                            if (raw === from) {
+                                modified = true;
+                                return hasHash ? '#' + to : to;
+                            }
                             if (raw.startsWith(from + '/')) {
                                 modified = true;
-                                return hasHash ? '#' + to + raw.substring(from.length) : to + raw.substring(from.length);
+                                return hasHash
+                                    ? '#' + to + raw.substring(from.length)
+                                    : to + raw.substring(from.length);
                             }
                         }
                         return t;
@@ -2108,15 +2343,24 @@ export default class TagLowercasePlugin extends Plugin {
                             const seen = new Set<string>();
                             for (const t of newTags) {
                                 const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
-                                if (!seen.has(clean)) { seen.add(clean); uniqueTags.push(t); }
+                                if (!seen.has(clean)) {
+                                    seen.add(clean);
+                                    uniqueTags.push(t);
+                                }
                             }
-                            if (uniqueTags.length !== fm[key].length || uniqueTags.some((t: string, i: number) => t !== fm[key][i])) {
+                            if (
+                                uniqueTags.length !== fm[key].length ||
+                                uniqueTags.some((t: string, i: number) => t !== fm[key][i])
+                            ) {
                                 fm[key] = uniqueTags;
                                 modified = true;
                             }
                         } else if (typeof fm[key] === 'string') {
                             const n = processSingleTag(fm[key]);
-                            if (n !== fm[key]) { fm[key] = n; modified = true; }
+                            if (n !== fm[key]) {
+                                fm[key] = n;
+                                modified = true;
+                            }
                         }
                     };
 
@@ -2135,7 +2379,10 @@ export default class TagLowercasePlugin extends Plugin {
                         if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
                         if (this.isTagProtected(capturedTag)) return match;
                         for (const [from, to] of renameMap) {
-                            if (capturedTag === from) { modified = true; return prefix + hash + to; }
+                            if (capturedTag === from) {
+                                modified = true;
+                                return prefix + hash + to;
+                            }
                             if (capturedTag.startsWith(from + '/')) {
                                 modified = true;
                                 return prefix + hash + to + capturedTag.substring(from.length);
@@ -2174,15 +2421,13 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async deleteTags(tagsToDelete: string[], silent = false): Promise<number> {
-        const cleanTags = tagsToDelete
-            .map(t => t.startsWith('#') ? t.substring(1) : t)
-            .filter(t => t.length > 0);
+        const cleanTags = tagsToDelete.map((t) => (t.startsWith('#') ? t.substring(1) : t)).filter((t) => t.length > 0);
 
-        const deletableTags = cleanTags.filter(t => !this.isTagProtected(t));
-        const protectedTags = cleanTags.filter(t => this.isTagProtected(t));
+        const deletableTags = cleanTags.filter((t) => !this.isTagProtected(t));
+        const protectedTags = cleanTags.filter((t) => this.isTagProtected(t));
 
         if (protectedTags.length > 0) {
-            new Notice(`⚠️ Skipping protected tags: ${protectedTags.map(t => '#' + t).join(', ')}`);
+            new Notice(`⚠️ Skipping protected tags: ${protectedTags.map((t) => '#' + t).join(', ')}`);
         }
 
         if (deletableTags.length === 0) {
@@ -2202,7 +2447,7 @@ export default class TagLowercasePlugin extends Plugin {
 
         const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         // Match exact tag OR tag/child
-        const patternParts = deletableTags.map(t => `(?:${escapeRegExp(t)}(?:\\/[\\p{L}\\p{N}_\\-]+)*)`);
+        const patternParts = deletableTags.map((t) => `(?:${escapeRegExp(t)}(?:\\/[\\p{L}\\p{N}_\\-]+)*)`);
         const combinedPattern = patternParts.join('|');
         const tagRegex = new RegExp(`(^|\\s)(#)(${combinedPattern})(?=[\\s]|$|[^\\p{L}\\p{N}_-])`, 'gu');
 
@@ -2217,7 +2462,7 @@ export default class TagLowercasePlugin extends Plugin {
                         const raw = t.startsWith('#') ? t.substring(1) : t;
                         if (this.isTagProtected(raw)) return false;
                         // Check if raw is one of the tags to delete or a child of them
-                        return deletableTags.some(del => raw === del || raw.startsWith(del + '/'));
+                        return deletableTags.some((del) => raw === del || raw.startsWith(del + '/'));
                     };
 
                     if (fm.tags) {
@@ -2232,7 +2477,8 @@ export default class TagLowercasePlugin extends Plugin {
                             }
                         }
                     }
-                    if (fm.tag) { // handle 'tag' key
+                    if (fm.tag) {
+                        // handle 'tag' key
                         if (Array.isArray(fm.tag)) {
                             const originalLen = fm.tag.length;
                             fm.tag = fm.tag.filter((t: string) => !shouldDelete(t));
@@ -2251,21 +2497,16 @@ export default class TagLowercasePlugin extends Plugin {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
                     const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
                     const skipStart = fmMatch ? fmMatch[0].length : 0;
-                    let newData = data.replace(tagRegex, (match, prefix, hash, tag, offset) => {
-                        if (offset < skipStart) return match;
-                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
-
-                        modified = true;
-                        return prefix.trimEnd(); // Remove trailing space to prevent double-space artifacts
-                    });
-                    // B01: Collapse any remaining double spaces in the body
-                    if (modified) {
-                        const bodyStart = skipStart;
-                        const body = newData.substring(bodyStart);
-                        newData = newData.substring(0, bodyStart) + body.replace(/ {2,}/g, ' ');
-                    }
-                    after = newData;
-                    return newData;
+                    // Remove only the tag and its adjacent separator space; never touch
+                    // newlines, indentation, frontmatter or code-block content.
+                    const { result, modified: bodyModified } = this.stripInlineTags(
+                        data,
+                        tagRegex,
+                        (hashOffset) => hashOffset < skipStart || this.isInCodeBlockRange(hashOffset, codeBlockRanges)
+                    );
+                    if (bodyModified) modified = true;
+                    after = result;
+                    return result;
                 });
 
                 if (modified && before !== after) {
@@ -2274,7 +2515,6 @@ export default class TagLowercasePlugin extends Plugin {
 
                 processedCount++;
                 progressModal.update(processedCount);
-
             } catch (e) {
                 console.error(`Failed to delete tags in ${file.path}`, e);
                 processedCount++;
@@ -2304,10 +2544,7 @@ export default class TagLowercasePlugin extends Plugin {
         let regex: RegExp;
 
         // Issue 12: Basic ReDoS protection
-        const looksComplex =
-            pattern.length > 100 ||
-            /([+*?])\1+/.test(pattern) ||
-            /\([^)]*[+*][^)]*\)\+/.test(pattern);
+        const looksComplex = pattern.length > 100 || /([+*?])\1+/.test(pattern) || /\([^)]*[+*][^)]*\)\+/.test(pattern);
         if (looksComplex) {
             new Notice('Regex pattern is too complex. Please simplify.');
             return;
@@ -2387,7 +2624,7 @@ export default class TagLowercasePlugin extends Plugin {
                 if (before !== after) {
                     changes.push({ path: file.path, before, after });
                 }
-                
+
                 processedCount++;
                 progressModal.update(processedCount);
             } catch (e) {
@@ -2427,7 +2664,7 @@ export default class TagLowercasePlugin extends Plugin {
                 const part = parts[i];
                 currentPath = currentPath ? `${currentPath}/${part}` : part;
 
-                let existingNode = currentLevel.find(n => n.name === part);
+                let existingNode = currentLevel.find((n) => n.name === part);
 
                 if (!existingNode) {
                     existingNode = { name: part, fullPath: currentPath, count: 0, children: [] };
@@ -2450,7 +2687,7 @@ export default class TagLowercasePlugin extends Plugin {
             }
             return total;
         };
-        
+
         accumulate(root);
 
         return root;
@@ -2459,7 +2696,7 @@ export default class TagLowercasePlugin extends Plugin {
     findOrphanedTags(): { tag: string; count: number }[] {
         const tags = this.app.metadataCache.getTags();
         return Object.keys(tags)
-            .map(tag => ({ tag, count: tags[tag] }))
+            .map((tag) => ({ tag, count: tags[tag] }))
             .filter(({ count }) => count < this.settings.orphanThreshold)
             .sort((a, b) => a.count - b.count);
     }
@@ -2471,13 +2708,17 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             const cache = this.app.metadataCache.getFileCache(file);
             if (cache?.tags) {
-                cache.tags.forEach(t => tagSet.add(t.tag));
+                cache.tags.forEach((t) => tagSet.add(t.tag));
             }
             if (cache?.frontmatter) {
                 const fm = cache.frontmatter;
                 const extractTags = (val: unknown) => {
-                    if (typeof val === 'string') val.split(',').forEach(t => tagSet.add(t.trim().startsWith('#') ? t.trim() : '#' + t.trim()));
-                    else if (Array.isArray(val)) val.forEach((t: unknown) => typeof t === 'string' && tagSet.add(t.startsWith('#') ? t : '#' + t));
+                    if (typeof val === 'string')
+                        val.split(',').forEach((t) => tagSet.add(t.trim().startsWith('#') ? t.trim() : '#' + t.trim()));
+                    else if (Array.isArray(val))
+                        val.forEach(
+                            (t: unknown) => typeof t === 'string' && tagSet.add(t.startsWith('#') ? t : '#' + t)
+                        );
                 };
                 if (fm.tags) extractTags(fm.tags);
                 if (fm.tag) extractTags(fm.tag);
@@ -2509,21 +2750,21 @@ export default class TagLowercasePlugin extends Plugin {
         for (const file of files) {
             const cache = this.app.metadataCache.getFileCache(file);
             if (!cache?.frontmatter) continue;
-            
+
             try {
                 // High-speed cached read (avoids disk I/O bottleneck)
                 const content = await this.app.vault.cachedRead(file);
-                
+
                 if (content.startsWith('---')) {
                     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
                     if (fmMatch) {
                         const fmText = fmMatch[1];
                         const lines = fmText.split('\n');
-                        
+
                         // Refined Heuristic: Detect quoted values while ignoring mandatory structural quotes
-                        const hasQuotedProps = lines.some(line => {
+                        const hasQuotedProps = lines.some((line) => {
                             // (?![\[{@#*&!%>|]) ensures the quote is NOT immediately followed by a YAML special character
-                            
+
                             // Match root-level properties & inline arrays: key: "val" OR key: ["val"]
                             if (/^[^\s:]+:\s*\[?\s*["'](?![[{@#*&!%>|])/.test(line)) return true;
                             // Match indented list items: - "val"
@@ -2548,7 +2789,7 @@ export default class TagLowercasePlugin extends Plugin {
                                     } else if (!value || value === '') {
                                         for (let j = i + 1; j < lines.length; j++) {
                                             const nextLine = lines[j].trim();
-                                            if (!nextLine) continue; 
+                                            if (!nextLine) continue;
                                             if (nextLine.startsWith('-')) {
                                                 stats.formatStats.yamlList.push(file);
                                             }
@@ -2574,11 +2815,11 @@ export default class TagLowercasePlugin extends Plugin {
                             if (val === null || val === undefined) continue;
 
                             const valArray = Array.isArray(val) ? val : [val];
-                            
+
                             // 1. Is this a wiki link property?
-                            const isWikiLinkProperty = valArray.some(v => {
+                            const isWikiLinkProperty = valArray.some((v) => {
                                 if (typeof v === 'string') return v.trim().startsWith('[[') && v.trim().endsWith(']]');
-                                if (Array.isArray(v) && v.length === 1 && typeof v[0] === 'string') return true; 
+                                if (Array.isArray(v) && v.length === 1 && typeof v[0] === 'string') return true;
                                 return false;
                             });
 
@@ -2586,23 +2827,23 @@ export default class TagLowercasePlugin extends Plugin {
                                 // 2. Peek at the raw lines to see HOW it is formatted
                                 const keyEscaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                                 const keyRegex = new RegExp(`^${keyEscaped}:`);
-                                const keyLineIndex = lines.findIndex(l => keyRegex.test(l));
-                                
+                                const keyLineIndex = lines.findIndex((l) => keyRegex.test(l));
+
                                 if (keyLineIndex !== -1) {
                                     const line = lines[keyLineIndex];
                                     const valueStr = line.substring(line.indexOf(':') + 1).trim();
-                                    
+
                                     // If the line has no value next to the key, it must be a multiline list below it
                                     if (!valueStr || valueStr === '') {
                                         fileHasWikiList = true;
-                                    } 
+                                    }
                                     // If it explicitly starts with an array bracket (and isn't just an unquoted [[link]])
                                     else if (valueStr.startsWith('[') && !valueStr.startsWith('[[')) {
                                         fileHasWikiInline = true;
                                     }
                                     // If it's a single item like "[[Link]]" or [[Link]], treat it as inline for stats purposes
                                     else {
-                                        fileHasWikiInline = true; 
+                                        fileHasWikiInline = true;
                                     }
                                 }
                             }
@@ -2613,7 +2854,9 @@ export default class TagLowercasePlugin extends Plugin {
                         if (fileHasWikiInline) stats.wikiLinkStats.inlineArray.push(file);
                     }
                 }
-            } catch (e) { /* Ignore read errors */ }
+            } catch (e) {
+                /* Ignore read errors */
+            }
         }
 
         if (totalTags === 0) return stats;
@@ -2680,15 +2923,15 @@ export default class TagLowercasePlugin extends Plugin {
             if (fm) {
                 let list: string[] = [];
                 if (fm.tags) {
-                    if (typeof fm.tags === 'string') list = fm.tags.split(',').map(t => t.trim());
-                    else if (Array.isArray(fm.tags)) list = fm.tags.map(t => String(t));
+                    if (typeof fm.tags === 'string') list = fm.tags.split(',').map((t) => t.trim());
+                    else if (Array.isArray(fm.tags)) list = fm.tags.map((t) => String(t));
                 }
                 if (fm.tag) {
                     if (typeof fm.tag === 'string') list = list.concat([fm.tag]);
-                    else if (Array.isArray(fm.tag)) list = list.concat(fm.tag.map(t => String(t)));
+                    else if (Array.isArray(fm.tag)) list = list.concat(fm.tag.map((t) => String(t)));
                 }
 
-                list.forEach(t => {
+                list.forEach((t) => {
                     const clean = t.startsWith('#') ? t.substring(1) : t;
                     fmTagsSet.add(clean);
                     if (clean.includes('/')) fileNestedSet.add(clean);
@@ -2697,7 +2940,7 @@ export default class TagLowercasePlugin extends Plugin {
 
             // Body (Inline Tags)
             if (cache.tags) {
-                cache.tags.forEach(t => {
+                cache.tags.forEach((t) => {
                     const clean = t.tag.startsWith('#') ? t.tag.substring(1) : t.tag;
                     bodyTagsSet.add(clean);
                     fileInlineSet.add(clean);
@@ -2731,42 +2974,44 @@ export default class TagLowercasePlugin extends Plugin {
         // Calculate Consistencies
         const calcConsistency = (arrays: string[][]) => {
             if (totalTags === 0) return 100;
-            const dominant = Math.max(...arrays.map(a => a.length));
+            const dominant = Math.max(...arrays.map((a) => a.length));
             return Math.round((dominant / totalTags) * 100);
         };
 
-        stats.caseStats.consistency = calcConsistency([stats.caseStats.lowercase, stats.caseStats.uppercase, stats.caseStats.mixed]);
+        stats.caseStats.consistency = calcConsistency([
+            stats.caseStats.lowercase,
+            stats.caseStats.uppercase,
+            stats.caseStats.mixed
+        ]);
 
         // For separators
         const sepArrays = [stats.separatorStats.underscore, stats.separatorStats.hyphen, stats.separatorStats.none];
-        const dominantSep = Math.max(...sepArrays.map(a => a.length));
+        const dominantSep = Math.max(...sepArrays.map((a) => a.length));
         const inconsistentSep = stats.separatorStats.both.length;
-        stats.separatorStats.consistency = totalTags > 0 
-            ? Math.min(100, Math.round((dominantSep / (totalTags - inconsistentSep || 1)) * 100))
-            : 100;
+        stats.separatorStats.consistency =
+            totalTags > 0 ? Math.min(100, Math.round((dominantSep / (totalTags - inconsistentSep || 1)) * 100)) : 100;
 
-        stats.specialCharStats.consistency = totalTags > 0 
-            ? Math.round((stats.specialCharStats.clean.length / totalTags) * 100)
-            : 100;
+        stats.specialCharStats.consistency =
+            totalTags > 0 ? Math.round((stats.specialCharStats.clean.length / totalTags) * 100) : 100;
 
         // --- 3. Duplicate Detection across case variants ---
         const globalTags = this.app.metadataCache.getTags();
         const caseGroups = new Map<string, string[]>();
 
-        tags.forEach(tag => {
+        tags.forEach((tag) => {
             const normalized = tag.replace(/^#/, '').toLowerCase();
             if (!caseGroups.has(normalized)) caseGroups.set(normalized, []);
             caseGroups.get(normalized)?.push(tag);
         });
 
-        const duplicates: { canonical: string, variants: string[] }[] = [];
+        const duplicates: { canonical: string; variants: string[] }[] = [];
         caseGroups.forEach((variants) => {
             if (variants.length > 1) {
                 const canonical = variants.reduce((a, b) => {
                     // NORMALIZED LOOKUP: Always use # prefix for count check
                     const countA = globalTags['#' + a.replace(/^#/, '')] || 0;
                     const countB = globalTags['#' + b.replace(/^#/, '')] || 0;
-                    
+
                     if (countA !== countB) return countA > countB ? a : b;
                     // Tie-breaker: Case-sensitive comparison for stability (e.g., "React" beats "react")
                     return a < b ? a : b;
@@ -2778,7 +3023,6 @@ export default class TagLowercasePlugin extends Plugin {
 
         return stats;
     }
-
 
     async findInvalidTagFormats(): Promise<InvalidTagFile[]> {
         const invalidFiles: InvalidTagFile[] = [];
@@ -2800,8 +3044,10 @@ export default class TagLowercasePlugin extends Plugin {
 
                 if (t !== trimmed) return { description: `${context} "${t}" has extra spaces`, tag: t };
                 if (trimmed.includes(' ')) return { description: `${context} "${t}" contains spaces`, tag: t };
-                if (PURE_NUMERIC.test(trimmed)) return { description: `${context} "${t}" consists solely of numbers`, tag: t };
-                if (INVALID_CHARS.test(trimmed)) return { description: `${context} "${t}" contains prohibited special characters`, tag: t };
+                if (PURE_NUMERIC.test(trimmed))
+                    return { description: `${context} "${t}" consists solely of numbers`, tag: t };
+                if (INVALID_CHARS.test(trimmed))
+                    return { description: `${context} "${t}" contains prohibited special characters`, tag: t };
 
                 return null;
             };
@@ -2820,7 +3066,10 @@ export default class TagLowercasePlugin extends Plugin {
                         seenInFM.add(clean);
 
                         if (value.startsWith('#')) {
-                            issues.push({ description: `Front matter "${key}" starts with # (invalid YAML syntax)`, tag: value });
+                            issues.push({
+                                description: `Front matter "${key}" starts with # (invalid YAML syntax)`,
+                                tag: value
+                            });
                         }
                         const err = validateTagString(value, `Front matter ${key}`);
                         if (err) issues.push(err);
@@ -2828,14 +3077,20 @@ export default class TagLowercasePlugin extends Plugin {
                         value.forEach((t: unknown) => {
                             const tagStr = String(t);
                             const clean = tagStr.startsWith('#') ? tagStr.substring(1) : tagStr;
-                            
+
                             if (seenInFM.has(clean)) {
-                                issues.push({ description: `Front matter contains duplicate tag: "${clean}"`, tag: tagStr });
+                                issues.push({
+                                    description: `Front matter contains duplicate tag: "${clean}"`,
+                                    tag: tagStr
+                                });
                             }
                             seenInFM.add(clean);
 
                             if (typeof t === 'string' && t.startsWith('#')) {
-                                issues.push({ description: `Front matter list item "${t}" starts with #`, tag: tagStr });
+                                issues.push({
+                                    description: `Front matter list item "${t}" starts with #`,
+                                    tag: tagStr
+                                });
                             }
                             const err = validateTagString(tagStr, `Front matter list item`);
                             if (err) issues.push(err);
@@ -2849,10 +3104,10 @@ export default class TagLowercasePlugin extends Plugin {
 
             if (issues.length > 0) {
                 // Deduplicate by description
-                let uniqueIssues = Array.from(new Map(issues.map(i => [i.description, i])).values());
-                
+                let uniqueIssues = Array.from(new Map(issues.map((i) => [i.description, i])).values());
+
                 // Filter out ignored issues
-                uniqueIssues = uniqueIssues.filter(issue => {
+                uniqueIssues = uniqueIssues.filter((issue) => {
                     const id = `${file.path}|${issue.description}`;
                     return !this.settings.ignoredIssues.includes(id);
                 });
@@ -2918,10 +3173,11 @@ export default class TagLowercasePlugin extends Plugin {
                     if (inlineValue && inlineValue !== '') {
                         if (inlineValue.startsWith('[') && inlineValue.endsWith(']')) {
                             // Single-line inline array: [a, b]
-                            tags = inlineValue.substring(1, inlineValue.length - 1)
+                            tags = inlineValue
+                                .substring(1, inlineValue.length - 1)
                                 .split(',')
-                                .map(t => t.trim().replace(/^["']|["']$/g, ''))
-                                .filter(t => t.length > 0);
+                                .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+                                .filter((t) => t.length > 0);
                         } else if (inlineValue.startsWith('[')) {
                             // B03: Multiline inline array: tags: [\n  a,\n  b\n]
                             let arrayContent = inlineValue.substring(1); // after '['
@@ -2941,8 +3197,8 @@ export default class TagLowercasePlugin extends Plugin {
                             }
                             tags = arrayContent
                                 .split(',')
-                                .map(t => t.trim().replace(/^["']|["']$/g, ''))
-                                .filter(t => t.length > 0);
+                                .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+                                .filter((t) => t.length > 0);
                             // Extend endIndex to cover all consumed lines
                             endIndex = Math.max(endIndex, arrayEndIndex);
                         } else {
@@ -2954,7 +3210,10 @@ export default class TagLowercasePlugin extends Plugin {
                         for (let i = keyIndex + 1; i <= endIndex; i++) {
                             const line = lines[i].trim();
                             if (line.startsWith('-')) {
-                                const val = line.substring(1).trim().replace(/^["']|["']$/g, '');
+                                const val = line
+                                    .substring(1)
+                                    .trim()
+                                    .replace(/^["']|["']$/g, '');
                                 // HARD IGNORE: If this is the specific template placeholder, skip this file
                                 if (val.includes('{ tags }')) return content;
                                 tags.push(val);
@@ -3007,7 +3266,7 @@ export default class TagLowercasePlugin extends Plugin {
             await this.addToHistory({
                 type: 'tag-format',
                 description: `Convert tags to ${format === 'inline' ? 'Inline Array' : 'YAML List'} (${changes.length} files)`,
-                changes,
+                changes
             });
         }
         if (!silent) {
@@ -3036,8 +3295,8 @@ export default class TagLowercasePlugin extends Plugin {
                     let modified = false;
 
                     // 1. Identify all wiki-link properties directly from lines (Bug 3 Fix)
-                    const propertiesToConvert: { key: string, values: string[], start: number, end: number }[] = [];
-                    
+                    const propertiesToConvert: { key: string; values: string[]; start: number; end: number }[] = [];
+
                     for (let i = 0; i < lines.length; i++) {
                         const line = lines[i];
                         const keyMatch = line.match(/^([^\s:]+):(.*)$/);
@@ -3057,7 +3316,7 @@ export default class TagLowercasePlugin extends Plugin {
                                 const innerStr = valueStr.substring(1, valueStr.length - 1);
                                 // Matches double-quoted strings, single-quoted strings, or bare values separated by commas
                                 const matches = innerStr.match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]+/g) || [];
-                                propertyValues = matches.map(v => v.trim().replace(/^["']|["']$/g, ''));
+                                propertyValues = matches.map((v) => v.trim().replace(/^["']|["']$/g, ''));
                             } else {
                                 // Single value: tag1
                                 propertyValues = [valueStr.replace(/^["']|["']$/g, '')];
@@ -3075,12 +3334,12 @@ export default class TagLowercasePlugin extends Plugin {
                         }
 
                         // Check if it's a wiki-link property (refined detection)
-                        const isWikiLink = propertyValues.some(v => v.startsWith('[[') && v.endsWith(']]'));
+                        const isWikiLink = propertyValues.some((v) => v.startsWith('[[') && v.endsWith(']]'));
 
                         if (isWikiLink && propertyValues.length > 0) {
                             propertiesToConvert.push({ key, values: propertyValues, start: i, end: endIndex });
                         }
-                        
+
                         // Skip the lines we already processed for this property
                         i = endIndex;
                     }
@@ -3088,14 +3347,14 @@ export default class TagLowercasePlugin extends Plugin {
                     // 2. Process conversions (Reverse order to keep indices stable)
                     for (let i = propertiesToConvert.length - 1; i >= 0; i--) {
                         const prop = propertiesToConvert[i];
-                        const quotedLinks = prop.values.map(l => `"${l.replace(/"/g, '\\"')}"`);
+                        const quotedLinks = prop.values.map((l) => `"${l.replace(/"/g, '\\"')}"`);
                         const newLines: string[] = [];
 
                         if (format === 'inline') {
                             newLines.push(`${prop.key}: [${quotedLinks.join(', ')}]`);
                         } else {
                             newLines.push(`${prop.key}:`);
-                            quotedLinks.forEach(l => newLines.push(`  - ${l}`));
+                            quotedLinks.forEach((l) => newLines.push(`  - ${l}`));
                         }
 
                         lines.splice(prop.start, prop.end - prop.start + 1, ...newLines);
@@ -3130,12 +3389,14 @@ export default class TagLowercasePlugin extends Plugin {
             await this.addToHistory({
                 type: 'wiki-link-format',
                 description: `Convert wiki links to ${format === 'inline' ? 'Inline Array' : 'YAML List'} (${changes.length} files)`,
-                changes,
+                changes
             });
         }
         if (!silent) {
             progressModal?.close();
-            new Notice(`Converted wiki links to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${count} files.`);
+            new Notice(
+                `Converted wiki links to ${format === 'inline' ? 'Inline Array' : 'YAML List'} in ${count} files.`
+            );
         }
     }
 
@@ -3160,7 +3421,6 @@ export default class TagLowercasePlugin extends Plugin {
         }
         return emptyFiles;
     }
-
 
     // --- Aliases ---
 
@@ -3219,11 +3479,11 @@ export default class TagLowercasePlugin extends Plugin {
             for (const [alias, canonical] of Object.entries(aliases)) {
                 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$|[^\\p{L}\\p{N}_-])`, 'gu');
-                
+
                 result = result.replace(regex, (m, prefix, hash, captured, offset) => {
                     if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
                     if (this.isTagProtected(captured)) return m;
-                    
+
                     modified = true;
                     return prefix + hash + canonical;
                 });
@@ -3281,7 +3541,7 @@ export default class TagLowercasePlugin extends Plugin {
             finalContent = this.transformContent(data, skipStart, codeBlockRanges, overrides);
             return finalContent;
         });
-        
+
         return finalContent;
     }
 
@@ -3300,7 +3560,7 @@ export default class TagLowercasePlugin extends Plugin {
             s = s.replace(/[^\p{L}\p{N}\-_]/gu, '');
         }
         if (this.settings.flattenDiacritics) {
-            s = s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+            s = s.normalize('NFD').replace(/\p{Diacritic}/gu, '');
         }
         if (this.settings.separatorStrategy === 'snake') {
             s = s.replace(/-/g, '_');
@@ -3317,10 +3577,15 @@ export default class TagLowercasePlugin extends Plugin {
         return s;
     }
 
-    private transformContent(content: string, skipStart: number, codeBlocks: { start: number; end: number }[], overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }): string {
+    private transformContent(
+        content: string,
+        skipStart: number,
+        codeBlocks: { start: number; end: number }[],
+        overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }
+    ): string {
         return content.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
             if (offset < skipStart) return fullMatch;
-            if (codeBlocks.some(b => offset >= b.start && offset < b.end)) return fullMatch;
+            if (codeBlocks.some((b) => offset >= b.start && offset < b.end)) return fullMatch;
             if (this.isTagProtected(tag.substring(1))) return fullMatch;
 
             const clean = tag.substring(1);
@@ -3328,7 +3593,6 @@ export default class TagLowercasePlugin extends Plugin {
             return prefix + '#' + converted;
         });
     }
-
 
     async convertAllToCase(targetCase: 'uppercase' | 'lowercase') {
         const files = this.getFilteredFiles();
@@ -3343,7 +3607,7 @@ export default class TagLowercasePlugin extends Plugin {
             for (const file of files) {
                 try {
                     const before = await this.app.vault.read(file);
-                    
+
                     // Issue 1: Use overrides instead of mutating shared state
                     const after = await this.processFile(file, { caseStrategy: targetCase });
 
@@ -3375,7 +3639,9 @@ export default class TagLowercasePlugin extends Plugin {
 
     getAllTags(): string[] {
         const tags = this.app.metadataCache.getTags();
-        return Object.keys(tags).map(t => t.substring(1)).sort();
+        return Object.keys(tags)
+            .map((t) => t.substring(1))
+            .sort();
     }
 }
 // --- Modal Components ---
@@ -3423,7 +3689,12 @@ class PreviewModal extends Modal {
     private preview: PreviewResult;
     private onConfirm: (files: PreviewFile[]) => void | Promise<void>;
 
-    constructor(app: App, plugin: TagLowercasePlugin, preview: PreviewResult, onConfirm: (files: PreviewFile[]) => void | Promise<void>) {
+    constructor(
+        app: App,
+        plugin: TagLowercasePlugin,
+        preview: PreviewResult,
+        onConfirm: (files: PreviewFile[]) => void | Promise<void>
+    ) {
         super(app);
         this.plugin = plugin;
         this.preview = preview;
@@ -3435,12 +3706,14 @@ class PreviewModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-preview-modal');
 
-        new Setting(contentEl).setName('Preview Changes').setHeading();
-        contentEl.createEl('p', { text: `${this.preview.affectedFiles.length} files will be modified (${this.preview.totalChanges} changes)` });
-        
+        new Setting(contentEl).setName('Preview changes').setHeading();
+        contentEl.createEl('p', {
+            text: `${this.preview.affectedFiles.length} files will be modified (${this.preview.totalChanges} changes)`
+        });
+
         contentEl.createEl('p', {
             cls: 'btm-preview-warning',
-            text: 'Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.',
+            text: 'Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.'
         });
 
         const listEl = contentEl.createDiv({ cls: 'btm-preview-list' });
@@ -3451,7 +3724,9 @@ class PreviewModal extends Modal {
             const headerEl = fileEl.createDiv({ cls: 'btm-preview-file-header' });
             const checkbox = headerEl.createEl('input', { type: 'checkbox' });
             checkbox.checked = file.included;
-            checkbox.addEventListener('change', () => { file.included = checkbox.checked; });
+            checkbox.addEventListener('change', () => {
+                file.included = checkbox.checked;
+            });
 
             headerEl.createSpan({ text: file.path, cls: 'btm-preview-file-path' });
             headerEl.createSpan({ text: ` (${file.changes.length} changes)`, cls: 'btm-preview-file-count' });
@@ -3469,24 +3744,24 @@ class PreviewModal extends Modal {
 
         const btnContainer = contentEl.createDiv({ cls: 'btm-button-row' });
 
-        const selectAllBtn = btnContainer.createEl('button', { text: 'Select All' });
+        const selectAllBtn = btnContainer.createEl('button', { text: 'Select all' });
         selectAllBtn.onclick = () => {
-            this.preview.affectedFiles.forEach(f => f.included = true);
-            listEl.querySelectorAll('input[type="checkbox"]').forEach((cb: HTMLInputElement) => cb.checked = true);
+            this.preview.affectedFiles.forEach((f) => (f.included = true));
+            listEl.querySelectorAll('input[type="checkbox"]').forEach((cb: HTMLInputElement) => (cb.checked = true));
         };
 
-        const selectNoneBtn = btnContainer.createEl('button', { text: 'Select None' });
+        const selectNoneBtn = btnContainer.createEl('button', { text: 'Select none' });
         selectNoneBtn.onclick = () => {
-            this.preview.affectedFiles.forEach(f => f.included = false);
-            listEl.querySelectorAll('input[type="checkbox"]').forEach((cb: HTMLInputElement) => cb.checked = false);
+            this.preview.affectedFiles.forEach((f) => (f.included = false));
+            listEl.querySelectorAll('input[type="checkbox"]').forEach((cb: HTMLInputElement) => (cb.checked = false));
         };
 
         const cancelBtn = btnContainer.createEl('button', { text: 'Cancel' });
         cancelBtn.onclick = () => this.close();
 
-        const confirmBtn = btnContainer.createEl('button', { text: 'Apply Changes', cls: 'mod-cta' });
+        const confirmBtn = btnContainer.createEl('button', { text: 'Apply changes', cls: 'mod-cta' });
         confirmBtn.onclick = () => {
-            const selected = this.preview.affectedFiles.filter(f => f.included);
+            const selected = this.preview.affectedFiles.filter((f) => f.included);
             this.close();
             runAsync(async () => {
                 await this.onConfirm(selected);
@@ -3513,8 +3788,8 @@ class HistoryModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-history-modal');
 
-        new Setting(contentEl).setName('Operation History').setHeading();
-        
+        new Setting(contentEl).setName('Operation history').setHeading();
+
         if (this.plugin.settings.historyExpirationDays > 0) {
             contentEl.createEl('p', {
                 text: `History is automatically cleared every ${this.plugin.settings.historyExpirationDays} days.`,
@@ -3537,7 +3812,7 @@ class HistoryModal extends Modal {
 
             itemEl.createDiv({ cls: 'btm-history-time', text: timeStr });
             itemEl.createDiv({ cls: 'btm-history-desc', text: op.description });
-            
+
             // If paths are cleared from data.json, we need to handle count display
             // We can't easily know the count without reading the manifest, so we check if it's external
             if (op.useExternalManifest) {
@@ -3550,7 +3825,7 @@ class HistoryModal extends Modal {
                 if (op.nonRevertible) {
                     itemEl.createDiv({
                         cls: 'btm-history-warning',
-                        text: '⚠ Snapshots omitted due to size - cannot undo.',
+                        text: '⚠ Snapshots omitted due to size - cannot undo.'
                     });
                 } else {
                     const revertBtn = itemEl.createEl('button', { text: 'Undo', cls: 'btm-revert-btn' });
@@ -3589,11 +3864,11 @@ class BtmConfirmationModal extends Modal {
 
         // Premium centered title
         contentEl.createEl('h2', { text: this.title, cls: 'btm-conf-title' });
-        
+
         contentEl.createEl('p', { text: this.message, cls: 'btm-conf-message' });
 
         const btnRow = contentEl.createDiv({ cls: 'btm-button-row-centered' });
-        
+
         const cancelBtn = btnRow.createEl('button', { text: 'Cancel', cls: 'btm-conf-btn' });
         cancelBtn.onclick = () => this.close();
 
@@ -3629,11 +3904,9 @@ class TagHierarchyModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-hierarchy-modal');
 
-        new Setting(contentEl)
-            .setName('Nested Tags')
-            .setHeading();
+        new Setting(contentEl).setName('Nested tags').setHeading();
 
-        this.hierarchy = this.plugin.getTagHierarchy().filter(n => n.children.length > 0);
+        this.hierarchy = this.plugin.getTagHierarchy().filter((n) => n.children.length > 0);
 
         if (this.hierarchy.length === 0) {
             contentEl.createEl('p', { text: 'No nested tags found in vault.' });
@@ -3642,21 +3915,19 @@ class TagHierarchyModal extends Modal {
 
         // Row 1: Search (Full Width)
         const searchRow = contentEl.createDiv({ cls: 'btm-tree-search-row' });
-        const searchInput = new TextComponent(searchRow)
-            .setPlaceholder('Search tags...')
-            .onChange((value) => {
-                this.searchQuery = value;
-                this.updateDisplay();
-            });
+        const searchInput = new TextComponent(searchRow).setPlaceholder('Search tags...').onChange((value) => {
+            this.searchQuery = value;
+            this.updateDisplay();
+        });
         searchInput.inputEl.addClass('btm-tree-search-input');
 
         // Row 2: Sort and Action Buttons
         const controlRow = contentEl.createDiv({ cls: 'btm-tree-controls-row' });
-        
+
         controlRow.createSpan({ text: 'Sort by:', cls: 'btm-control-label' });
         const dropdown = new DropdownComponent(controlRow)
             .addOption('alphabetical', 'A-Z')
-            .addOption('nesting', 'Nested Count')
+            .addOption('nesting', 'Nested count')
             .addOption('usage', 'Usage')
             .setValue(this.sortStrategy)
             .onChange((value) => {
@@ -3669,24 +3940,24 @@ class TagHierarchyModal extends Modal {
 
         controlRow.createDiv({ cls: 'btm-spacer' });
 
-        const expandBtn = controlRow.createEl('button', { text: 'Expand All', cls: 'btm-tiny-btn' });
-        const collapseBtn = controlRow.createEl('button', { text: 'Collapse All', cls: 'btm-tiny-btn' });
-        const copyBtn = controlRow.createEl('button', { text: 'Copy All', cls: 'btm-tiny-btn' });
+        const expandBtn = controlRow.createEl('button', { text: 'Expand all', cls: 'btm-tiny-btn' });
+        const collapseBtn = controlRow.createEl('button', { text: 'Collapse all', cls: 'btm-tiny-btn' });
+        const copyBtn = controlRow.createEl('button', { text: 'Copy all', cls: 'btm-tiny-btn' });
 
         // Tree Area
         this.treeEl = contentEl.createDiv({ cls: 'btm-tree-container' });
         this.updateDisplay();
 
         expandBtn.onclick = () => {
-            this.treeEl.querySelectorAll('.btm-tree-children').forEach(el => el.removeClass('is-collapsed'));
-            this.treeEl.querySelectorAll('.btm-tree-collapse-icon').forEach(el => {
+            this.treeEl.querySelectorAll('.btm-tree-children').forEach((el) => el.removeClass('is-collapsed'));
+            this.treeEl.querySelectorAll('.btm-tree-collapse-icon').forEach((el) => {
                 setIcon(el as HTMLElement, 'chevron-down');
             });
         };
 
         collapseBtn.onclick = () => {
-            this.treeEl.querySelectorAll('.btm-tree-children').forEach(el => el.addClass('is-collapsed'));
-            this.treeEl.querySelectorAll('.btm-tree-collapse-icon').forEach(el => {
+            this.treeEl.querySelectorAll('.btm-tree-children').forEach((el) => el.addClass('is-collapsed'));
+            this.treeEl.querySelectorAll('.btm-tree-collapse-icon').forEach((el) => {
                 setIcon(el as HTMLElement, 'chevron-right');
             });
         };
@@ -3696,7 +3967,7 @@ class TagHierarchyModal extends Modal {
             const filtered = this.filterNodes(clonedHierarchy, this.searchQuery);
             this.sortNodes(filtered);
             const tags = this.flattenNodes(filtered);
-            const text = tags.map(t => `#${t}`).join('\n');
+            const text = tags.map((t) => `#${t}`).join('\n');
 
             runAsync(async () => {
                 try {
@@ -3711,7 +3982,7 @@ class TagHierarchyModal extends Modal {
     }
 
     private deepCloneNodes(nodes: TagNode[]): TagNode[] {
-        return nodes.map(node => ({
+        return nodes.map((node) => ({
             ...node,
             children: this.deepCloneNodes(node.children)
         }));
@@ -3746,16 +4017,18 @@ class TagHierarchyModal extends Modal {
         if (!query) return this.deepCloneNodes(nodes);
 
         const q = query.toLowerCase();
-        return nodes.map(node => {
-            const matchesSelf = node.name.toLowerCase().includes(q);
-            // Fix: If parent matches, keep all children for context
-            const filteredChildren = matchesSelf ? node.children : this.filterNodes(node.children, query);
-            
-            if (matchesSelf || filteredChildren.length > 0) {
-                return { ...node, children: filteredChildren };
-            }
-            return null;
-        }).filter(n => n !== null) as TagNode[];
+        return nodes
+            .map((node) => {
+                const matchesSelf = node.name.toLowerCase().includes(q);
+                // Fix: If parent matches, keep all children for context
+                const filteredChildren = matchesSelf ? node.children : this.filterNodes(node.children, query);
+
+                if (matchesSelf || filteredChildren.length > 0) {
+                    return { ...node, children: filteredChildren };
+                }
+                return null;
+            })
+            .filter((n) => n !== null) as TagNode[];
     }
 
     private sortNodes(nodes: TagNode[]) {
@@ -3768,7 +4041,7 @@ class TagHierarchyModal extends Modal {
                 return a.name.localeCompare(b.name);
             }
         });
-        
+
         for (const node of nodes) {
             if (node.children.length > 0) {
                 this.sortNodes(node.children);
@@ -3780,9 +4053,9 @@ class TagHierarchyModal extends Modal {
         for (const node of nodes) {
             const hasChildren = node.children.length > 0;
             const nodeEl = container.createDiv({ cls: 'btm-tree-node' });
-            
+
             const headerEl = nodeEl.createDiv({ cls: 'btm-tree-header' });
-            
+
             const collapseIcon = headerEl.createSpan({ cls: 'btm-tree-collapse-icon' });
             if (hasChildren) {
                 setIcon(collapseIcon, 'chevron-down');
@@ -3790,7 +4063,7 @@ class TagHierarchyModal extends Modal {
 
             const iconEl = headerEl.createSpan({ cls: 'btm-tree-icon' });
             setIcon(iconEl, hasChildren ? 'folder' : 'tag');
-            
+
             headerEl.createSpan({ text: node.name, cls: 'btm-tree-name' });
             if (node.count > 0) {
                 headerEl.createSpan({ text: ` (${node.count})`, cls: 'btm-tree-count' });
@@ -3848,8 +4121,10 @@ class InvalidTagsModal extends Modal {
         contentEl.addClass('btm-invalid-modal');
 
         new Setting(contentEl)
-            .setName('Files with Invalid Tag Format')
-            .setDesc(`${this.invalidFiles.length} file${this.invalidFiles.length > 1 ? 's' : ''} found with tag format issues`)
+            .setName('Files with invalid tag format')
+            .setDesc(
+                `${this.invalidFiles.length} file${this.invalidFiles.length > 1 ? 's' : ''} found with tag format issues`
+            )
             .setHeading();
 
         const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
@@ -3874,19 +4149,17 @@ class InvalidTagsModal extends Modal {
             const issuesEl = itemEl.createDiv({ cls: 'btm-invalid-issues' });
             for (const issue of item.issues) {
                 const issueEl = issuesEl.createDiv({ cls: 'btm-invalid-issue-manual' });
-                
+
                 const infoEl = issueEl.createDiv({ cls: 'btm-issue-info' });
                 setIcon(infoEl.createSpan({ cls: 'btm-icon' }), 'alert-circle');
                 infoEl.createSpan({ text: ' ' + issue.description });
 
                 const actionRow = issueEl.createDiv({ cls: 'btm-fix-manual-row' });
-                
+
                 if (issue.tag) {
-                    const input = new TextComponent(actionRow)
-                        .setValue(issue.tag)
-                        .setPlaceholder('Tag name...');
+                    const input = new TextComponent(actionRow).setValue(issue.tag).setPlaceholder('Tag name...');
                     input.inputEl.addClass('btm-inline-input');
-                    
+
                     const updateBtn = actionRow.createEl('button', { text: 'Update', cls: 'btm-small-btn mod-cta' });
                     updateBtn.onclick = () => {
                         runAsync(async () => {
@@ -3914,7 +4187,10 @@ class InvalidTagsModal extends Modal {
                         });
                     };
 
-                    const deleteBtn = actionRow.createEl('button', { text: 'Delete', cls: 'btm-small-btn mod-warning' });
+                    const deleteBtn = actionRow.createEl('button', {
+                        text: 'Delete',
+                        cls: 'btm-small-btn mod-warning'
+                    });
                     deleteBtn.onclick = () => {
                         runAsync(async () => {
                             const file = this.app.vault.getAbstractFileByPath(item.path);
@@ -3993,7 +4269,7 @@ class EmptyTagsModal extends Modal {
         contentEl.addClass('btm-invalid-modal'); // Reuse styles
 
         new Setting(contentEl)
-            .setName('Files with Empty Tags')
+            .setName('Files with empty tags')
             .setDesc(`${this.emptyFiles.length} file${this.emptyFiles.length > 1 ? 's' : ''} found`)
             .setHeading();
 
@@ -4044,7 +4320,7 @@ class InlineTagsModal extends Modal {
         contentEl.addClass('btm-invalid-modal');
 
         new Setting(contentEl)
-            .setName('Notes with Inline Tags')
+            .setName('Notes with inline tags')
             .setDesc(`${this.inlineFiles.length} notes found with tags in body`)
             .setHeading();
 
@@ -4099,7 +4375,7 @@ class NestedFilesModal extends Modal {
         contentEl.addClass('btm-invalid-modal');
 
         new Setting(contentEl)
-            .setName('Notes with Nested Tags')
+            .setName('Notes with nested tags')
             .setDesc(`${this.nestedFiles.length} notes found containing hierarchical tags`)
             .setHeading();
 
@@ -4156,10 +4432,7 @@ class TagListModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-tag-list-modal');
 
-        new Setting(contentEl)
-            .setName(this.title)
-            .setDesc(`${this.tags.length} tags found`)
-            .setHeading();
+        new Setting(contentEl).setName(this.title).setDesc(`${this.tags.length} tags found`).setHeading();
 
         const listEl = contentEl.createDiv({ cls: 'btm-invalid-list' });
 
@@ -4205,20 +4478,16 @@ class SimpleFileListModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-file-list-modal');
 
-        new Setting(contentEl)
-            .setName(this.title)
-            .setDesc(`${this.files.length} files found`)
-            .setHeading();
+        new Setting(contentEl).setName(this.title).setDesc(`${this.files.length} files found`).setHeading();
 
         const listEl = contentEl.createDiv({ cls: 'btm-file-list' });
 
         for (const file of this.files) {
             const itemEl = listEl.createDiv({ cls: 'btm-file-item' });
-            itemEl.createEl('a', { text: file.path, cls: 'btm-file-link' })
-                .onclick = () => {
-                    this.close();
-                    void this.app.workspace.openLinkText(file.path, '', false);
-                };
+            itemEl.createEl('a', { text: file.path, cls: 'btm-file-link' }).onclick = () => {
+                this.close();
+                void this.app.workspace.openLinkText(file.path, '', false);
+            };
         }
 
         const btnRow = contentEl.createDiv({ cls: 'btm-button-row' });
@@ -4246,7 +4515,7 @@ class BtmErrorReportModal extends Modal {
         const { contentEl } = this;
         contentEl.empty();
         contentEl.addClass('btm-file-list-modal');
-        
+
         // Ensure modal is large enough and styled
         this.modalEl.addClass('btm-modal-wide');
 
@@ -4276,8 +4545,11 @@ class BtmErrorReportModal extends Modal {
                 if (msg.includes('mapping') || msg.includes('colon') || msg.includes('syntax')) {
                     const actionRow = itemEl.createDiv({ cls: 'btm-button-row btm-button-row-start' });
 
-                    const fixBtn = actionRow.createEl('button', { text: 'Fix Syntax', cls: 'mod-cta btm-fix-syntax-btn' });
-                    
+                    const fixBtn = actionRow.createEl('button', {
+                        text: 'Fix syntax',
+                        cls: 'mod-cta btm-fix-syntax-btn'
+                    });
+
                     fixBtn.onclick = () => {
                         runAsync(async () => {
                             const file = this.app.vault.getAbstractFileByPath(err.path);
@@ -4303,8 +4575,6 @@ class BtmErrorReportModal extends Modal {
     }
 }
 
-
-
 // Orphan Tags Modal
 
 class OrphanTagsModal extends Modal {
@@ -4321,7 +4591,7 @@ class OrphanTagsModal extends Modal {
         contentEl.addClass('btm-orphan-modal');
 
         new Setting(contentEl)
-            .setName('Orphaned Tags')
+            .setName('Orphaned tags')
             .setDesc(`Tags used in fewer than ${this.plugin.settings.orphanThreshold} files`)
             .setHeading();
 
@@ -4333,17 +4603,22 @@ class OrphanTagsModal extends Modal {
         }
 
         if (orphans.length > 0) {
-            const deleteBtn = contentEl.createEl('button', { text: 'Delete All Orphans', cls: 'mod-warning btm-action-btn' });
+            const deleteBtn = contentEl.createEl('button', {
+                text: 'Delete all orphans',
+                cls: 'mod-warning btm-action-btn'
+            });
             deleteBtn.onclick = () => {
                 new BtmConfirmationModal(
                     this.app,
-                    'Delete All Orphans',
+                    'Delete all orphans',
                     `Are you sure you want to delete ${orphans.length} orphaned tags? This will remove them from all files.`,
                     async () => {
                         this.close();
-                        const tagsToDelete = orphans.map(o => o.tag);
+                        const tagsToDelete = orphans.map((o) => o.tag);
                         const modifiedCount = await this.plugin.deleteTags(tagsToDelete, true);
-                        new Notice(`Successfully deleted ${tagsToDelete.length} orphan tags across ${modifiedCount} files.`);
+                        new Notice(
+                            `Successfully deleted ${tagsToDelete.length} orphan tags across ${modifiedCount} files.`
+                        );
                     }
                 ).open();
             };
@@ -4379,7 +4654,7 @@ class TagSuggest extends SuggestModal<string> {
     getSuggestions(query: string): string[] {
         const tags = this.plugin.getAllTags();
         if (!query) return tags.slice(0, 50);
-        return tags.filter(t => t.toLowerCase().includes(query.toLowerCase())).slice(0, 50);
+        return tags.filter((t) => t.toLowerCase().includes(query.toLowerCase())).slice(0, 50);
     }
 
     renderSuggestion(tag: string, el: HTMLElement) {
@@ -4414,7 +4689,7 @@ class MultiTagSelectModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-multiselect-modal');
 
-        new Setting(contentEl).setName('Select Tags to Merge').setHeading();
+        new Setting(contentEl).setName('Select tags to merge').setHeading();
 
         const searchDiv = contentEl.createDiv({ cls: 'btm-search-container' });
         this.searchInput = new TextComponent(searchDiv).setPlaceholder('Search tags...');
@@ -4430,7 +4705,7 @@ class MultiTagSelectModal extends Modal {
         const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
         cancelBtn.onclick = () => this.close();
 
-        const confirmBtn = btnRow.createEl('button', { text: 'Confirm Selection', cls: 'mod-cta' });
+        const confirmBtn = btnRow.createEl('button', { text: 'Confirm selection', cls: 'mod-cta' });
         confirmBtn.onclick = () => {
             this.close();
             this.onConfirm(Array.from(this.selectedTags));
@@ -4441,7 +4716,7 @@ class MultiTagSelectModal extends Modal {
         this.listEl.empty();
         const query = this.searchInput.getValue().toLowerCase();
         const tags = this.plugin.getAllTags();
-        const filtered = query ? tags.filter(t => t.toLowerCase().includes(query)) : tags;
+        const filtered = query ? tags.filter((t) => t.toLowerCase().includes(query)) : tags;
 
         for (const tag of filtered.slice(0, 100)) {
             const count = this.tagCounts['#' + tag] || 0;
@@ -4471,7 +4746,12 @@ class MultiTagSelectModal extends Modal {
             display.empty();
             if (this.selectedTags.size > 0) {
                 display.createSpan({ text: `Selected (${this.selectedTags.size}): ` });
-                display.createSpan({ text: Array.from(this.selectedTags).map(t => '#' + t).join(', '), cls: 'btm-selected-list' });
+                display.createSpan({
+                    text: Array.from(this.selectedTags)
+                        .map((t) => '#' + t)
+                        .join(', '),
+                    cls: 'btm-selected-list'
+                });
             }
         }
     }
@@ -4489,10 +4769,15 @@ class FolderSelectModal extends Modal {
     private listEl: HTMLElement;
     private searchInput: TextComponent;
 
-    constructor(app: App, plugin: TagLowercasePlugin, currentFolders: string[], onConfirm: (folders: string[]) => void | Promise<void>) {
+    constructor(
+        app: App,
+        plugin: TagLowercasePlugin,
+        currentFolders: string[],
+        onConfirm: (folders: string[]) => void | Promise<void>
+    ) {
         super(app);
         this.plugin = plugin;
-        this.selectedFolders = new Set(currentFolders.filter(f => f));
+        this.selectedFolders = new Set(currentFolders.filter((f) => f));
         this.onConfirm = onConfirm;
     }
 
@@ -4501,7 +4786,7 @@ class FolderSelectModal extends Modal {
         contentEl.empty();
         contentEl.addClass('btm-folder-modal');
 
-        new Setting(contentEl).setName('Select Folders').setHeading();
+        new Setting(contentEl).setName('Select folders').setHeading();
 
         const searchDiv = contentEl.createDiv({ cls: 'btm-search-container' });
         this.searchInput = new TextComponent(searchDiv).setPlaceholder('Search folders...');
@@ -4517,7 +4802,7 @@ class FolderSelectModal extends Modal {
         const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
         cancelBtn.onclick = () => this.close();
 
-        const confirmBtn = btnRow.createEl('button', { text: 'Confirm Selection', cls: 'mod-cta' });
+        const confirmBtn = btnRow.createEl('button', { text: 'Confirm selection', cls: 'mod-cta' });
         confirmBtn.onclick = () => {
             const selected = Array.from(this.selectedFolders);
             this.close();
@@ -4557,9 +4842,9 @@ class FolderSelectModal extends Modal {
                 this.listEl.createEl('p', { text: 'Start typing to search folders...', cls: 'btm-loading' });
                 return;
             }
-            this.listEl.createEl('div', { text: 'Selected Folders:', cls: 'btm-list-header' });
+            this.listEl.createEl('div', { text: 'Selected folders:', cls: 'btm-list-header' });
         } else {
-            displayFolders = allFolders.filter(f => f.toLowerCase().includes(query)).slice(0, 100);
+            displayFolders = allFolders.filter((f) => f.toLowerCase().includes(query)).slice(0, 100);
             if (displayFolders.length === 0) {
                 this.listEl.createEl('p', { text: 'No folders found', cls: 'btm-no-results' });
                 return;
@@ -4629,53 +4914,60 @@ class TagInteractionHandler extends Component {
                 source: hoverSource,
                 targetEl,
                 linktext: tagPage.path,
-                hoverParent: targetEl.closest(container) ?? targetEl,
+                hoverParent: targetEl.closest(container) ?? targetEl
             });
         });
 
         if (this.opts.enableContextMenu) {
-            registerDelegatedDomEvent(this, activeDocument, 'contextmenu', selector, (event, targetEl) => {
-                const tagName = toTag(targetEl);
-                if (!tagName) return;
+            registerDelegatedDomEvent(
+                this,
+                activeDocument,
+                'contextmenu',
+                selector,
+                (event, targetEl) => {
+                    const tagName = toTag(targetEl);
+                    if (!tagName) return;
 
-                const mouseEvent = event as MouseEvent;
-                if (!this.opts.mergeMenu) {
-                    this.plugin.setupTagWranglerMenu(menuForEvent(mouseEvent), tagName);
-                    return;
-                }
+                    const mouseEvent = event as MouseEvent;
+                    if (!this.opts.mergeMenu) {
+                        this.plugin.setupTagWranglerMenu(menuForEvent(mouseEvent), tagName);
+                        return;
+                    }
 
-                const menuCtor = Menu as typeof Menu & { forEvent?: (event: MouseEvent) => Menu };
-                const originalShowAtPosition = Menu.prototype.showAtPosition;
-                const originalForEvent = menuCtor.forEvent;
-                const plugin = this.plugin;
-                let restored = false;
+                    const menuCtor = Menu as typeof Menu & { forEvent?: (event: MouseEvent) => Menu };
+                    const originalShowAtPosition = Menu.prototype.showAtPosition;
+                    const originalForEvent = menuCtor.forEvent;
+                    const plugin = this.plugin;
+                    let restored = false;
 
-                const restore = () => {
-                    if (restored) return;
-                    restored = true;
-                    Menu.prototype.showAtPosition = originalShowAtPosition;
-                    menuCtor.forEvent = originalForEvent;
-                };
-
-                Menu.prototype.showAtPosition = function (...args: Parameters<Menu['showAtPosition']>) {
-                    restore();
-                    plugin.setupTagWranglerMenu(this, tagName);
-                    return originalShowAtPosition.apply(this, args);
-                };
-
-                if (originalForEvent) {
-                    menuCtor.forEvent = (ev: MouseEvent) => {
-                        const menu = originalForEvent.call(menuCtor, ev);
-                        if (ev === mouseEvent) {
-                            this.plugin.setupTagWranglerMenu(menu, tagName);
-                            restore();
-                        }
-                        return menu;
+                    const restore = () => {
+                        if (restored) return;
+                        restored = true;
+                        Menu.prototype.showAtPosition = originalShowAtPosition;
+                        menuCtor.forEvent = originalForEvent;
                     };
-                }
 
-                window.setTimeout(restore, 0);
-            }, { capture: !!this.opts.mergeMenu });
+                    Menu.prototype.showAtPosition = function (...args: Parameters<Menu['showAtPosition']>) {
+                        restore();
+                        plugin.setupTagWranglerMenu(this, tagName);
+                        return originalShowAtPosition.apply(this, args);
+                    };
+
+                    if (originalForEvent) {
+                        menuCtor.forEvent = (ev: MouseEvent) => {
+                            const menu = originalForEvent.call(menuCtor, ev);
+                            if (ev === mouseEvent) {
+                                this.plugin.setupTagWranglerMenu(menu, tagName);
+                                restore();
+                            }
+                            return menu;
+                        };
+                    }
+
+                    window.setTimeout(restore, 0);
+                },
+                { capture: !!this.opts.mergeMenu }
+            );
         }
 
         if (hoverSource === 'preview') {
@@ -4690,29 +4982,36 @@ class TagInteractionHandler extends Component {
                     source: 'bulk-tag-manager',
                     type: 'text',
                     title: tagName.replace(/^#/, ''),
-                    icon: 'hashtag',
+                    icon: 'hashtag'
                 });
             });
         }
 
-        registerDelegatedDomEvent(this, activeDocument, hoverSource === 'editor' ? 'mousedown' : 'click', selector, (event, targetEl) => {
-            const mouseEvent = event as MouseEvent;
-            const isMod = !!Keymap.isModEvent(mouseEvent);
-            if (!isMod && !mouseEvent.altKey) return;
+        registerDelegatedDomEvent(
+            this,
+            activeDocument,
+            hoverSource === 'editor' ? 'mousedown' : 'click',
+            selector,
+            (event, targetEl) => {
+                const mouseEvent = event as MouseEvent;
+                const isMod = !!Keymap.isModEvent(mouseEvent);
+                if (!isMod && !mouseEvent.altKey) return;
 
-            const tagName = toTag(targetEl);
-            if (!tagName) return;
+                const tagName = toTag(targetEl);
+                if (!tagName) return;
 
-            const existingTagPage = this.plugin.tagPage(tagName);
-            if (existingTagPage) {
-                void this.plugin.openTagPage(existingTagPage, false, isMod);
-            } else {
-                new TagPageCreateModal(this.plugin.app, this.plugin, tagName.replace(/^#/, ''), isMod).open();
-            }
+                const existingTagPage = this.plugin.tagPage(tagName);
+                if (existingTagPage) {
+                    void this.plugin.openTagPage(existingTagPage, false, isMod);
+                } else {
+                    new TagPageCreateModal(this.plugin.app, this.plugin, tagName.replace(/^#/, ''), isMod).open();
+                }
 
-            mouseEvent.preventDefault();
-            mouseEvent.stopImmediatePropagation();
-        }, { capture: true });
+                mouseEvent.preventDefault();
+                mouseEvent.stopImmediatePropagation();
+            },
+            { capture: true }
+        );
     }
 }
 
@@ -4774,18 +5073,18 @@ class TagPageCreateModal extends Modal {
         const { contentEl } = this;
         contentEl.empty();
 
-        new Setting(contentEl).setName('Create Tag Page').setHeading();
+        new Setting(contentEl).setName('Create tag page').setHeading();
         contentEl.createEl('p', { text: `A tag page for #${this.tagName} does not exist.` });
 
         const actions = contentEl.createDiv({ cls: 'btm-action-row' });
-        const searchBtn = actions.createEl('button', { text: 'Search Instead' });
+        const searchBtn = actions.createEl('button', { text: 'Search instead' });
         searchBtn.onclick = () => {
             const search = getGlobalSearch(this.app);
             search?.openGlobalSearch?.(`tag:#${this.tagName}`);
             this.close();
         };
 
-        const createBtn = actions.createEl('button', { text: 'Create Tag Page', cls: 'mod-cta' });
+        const createBtn = actions.createEl('button', { text: 'Create tag page', cls: 'mod-cta' });
         createBtn.onclick = () => {
             runAsync(async () => {
                 this.close();
@@ -4816,7 +5115,9 @@ class BulkManagerSettingsDashboard {
 
     render() {
         const contentEl = this.contentEl;
-        contentEl.createEl('p', { text: 'Simple tag actions are on the ribbon. Bulk and vault-wide tools live here in settings.' });
+        contentEl.createEl('p', {
+            text: 'Simple tag actions are on the ribbon. Bulk and vault-wide tools live here in settings.'
+        });
 
         const overviewBox = contentEl.createDiv({ cls: 'btm-section-box' });
         const overviewHeader = overviewBox.createDiv({ cls: 'btm-collapsible-header' });
@@ -4843,9 +5144,9 @@ class BulkManagerSettingsDashboard {
         renameOptionsHeader.createSpan({ text: 'Tag Rename Options' });
         const renameOptionsArrow = renameOptionsHeader.createSpan({ cls: 'btm-header-arrow' });
         setIcon(renameOptionsArrow, 'chevron-down');
-        
+
         const renameOptionsContent = renameOptionsBox.createDiv({ cls: 'btm-collapsible-content' });
-        
+
         let isRenameOptionsExpanded = true;
         renameOptionsHeader.onclick = () => {
             isRenameOptionsExpanded = !isRenameOptionsExpanded;
@@ -4853,11 +5154,12 @@ class BulkManagerSettingsDashboard {
             renameOptionsArrow.toggleClass('is-collapsed', !isRenameOptionsExpanded);
         };
 
-
-
         // Sub-section: Batch Rename (table)
         const batchSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
-        batchSub.createEl('h4', { text: 'Rename Tags', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        batchSub.createEl('h4', {
+            text: 'Rename tags',
+            attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' }
+        });
         batchSub.createEl('p', {
             text: 'Rename multiple tags at once. Each row is an independent old → new pair.',
             cls: 'btm-section-desc'
@@ -4887,7 +5189,7 @@ class BulkManagerSettingsDashboard {
             const removeBtn = row.createEl('button', { cls: 'btm-icon-btn btm-shrink-0' });
             setIcon(removeBtn, 'x');
             removeBtn.onclick = () => {
-                const idx = batchPairs.findIndex(p => p.row === row);
+                const idx = batchPairs.findIndex((p) => p.row === row);
                 if (idx !== -1) batchPairs.splice(idx, 1);
                 row.remove();
             };
@@ -4898,16 +5200,21 @@ class BulkManagerSettingsDashboard {
         addBatchRow();
         addBatchRow();
 
-        const batchControlRow = batchSub.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between;' } });
+        const batchControlRow = batchSub.createDiv({
+            attr: { style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between;' }
+        });
 
-        const addRowBtn = batchControlRow.createEl('button', { text: '+ Add row', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const addRowBtn = batchControlRow.createEl('button', {
+            text: '+ Add row',
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         addRowBtn.onclick = () => addBatchRow();
 
         const btnBatchRename = batchControlRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
         btnBatchRename.onclick = () => {
             const pairs = batchPairs
-                .map(p => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
-                .filter(p => p.from && p.to);
+                .map((p) => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
+                .filter((p) => p.from && p.to);
 
             if (pairs.length === 0) {
                 new Notice('Please fill at least one rename pair.');
@@ -4916,7 +5223,7 @@ class BulkManagerSettingsDashboard {
 
             new BtmConfirmationModal(
                 this.app,
-                'Rename Tags',
+                'Rename tags',
                 `Apply ${pairs.length} rename pair(s) across the vault?`,
                 async () => {
                     await this.plugin.renameTagBatch(pairs);
@@ -4933,7 +5240,10 @@ class BulkManagerSettingsDashboard {
 
         // Sub-section: Rename from CSV
         const csvSub = renameOptionsContent.createDiv({ cls: 'btm-subsection-box' });
-        csvSub.createEl('h4', { text: 'Batch Rename from CSV', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        csvSub.createEl('h4', {
+            text: 'Batch rename from CSV',
+            attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' }
+        });
         csvSub.createEl('p', {
             text: 'Upload a CSV with columns old_tag,new_tag to rename many tags at once.',
             cls: 'btm-section-desc'
@@ -4963,7 +5273,7 @@ class BulkManagerSettingsDashboard {
                 for (let i = 1; i < lines.length; i++) {
                     const line = lines[i].trim();
                     if (!line) continue;
-                    const [from, to] = line.split(',').map(s => s.trim().replace(/^#/, ''));
+                    const [from, to] = line.split(',').map((s) => s.trim().replace(/^#/, ''));
                     if (from && to) parsedCsvPairs.push({ from, to });
                 }
                 csvPreview.textContent = `Found ${parsedCsvPairs.length} pairs. Example: ${parsedCsvPairs[0].from} → ${parsedCsvPairs[0].to}`;
@@ -4972,8 +5282,10 @@ class BulkManagerSettingsDashboard {
         });
 
         const csvActionCol = csvContainer.createDiv({ cls: 'btm-field-column' });
-        const csvBtnRow = csvActionCol.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: flex-end;' } });
-        
+        const csvBtnRow = csvActionCol.createDiv({
+            attr: { style: 'display: flex; gap: 8px; align-items: flex-end;' }
+        });
+
         const btnUploadCsv = csvBtnRow.createEl('button', { text: 'Upload CSV', cls: 'btm-action-btn' });
         btnUploadCsv.onclick = () => csvFileInput.click();
 
@@ -4985,7 +5297,7 @@ class BulkManagerSettingsDashboard {
             }
             new BtmConfirmationModal(
                 this.app,
-                'Batch Rename from CSV',
+                'Batch rename from CSV',
                 `Rename ${parsedCsvPairs.length} tags from CSV?`,
                 async () => {
                     await this.plugin.renameTagBatch(parsedCsvPairs);
@@ -5004,23 +5316,29 @@ class BulkManagerSettingsDashboard {
         const sourceCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         sourceCol.createEl('label', { text: 'Source tags' });
         const mergeSourcesInput = new TextComponent(sourceCol).setPlaceholder('#tag1, #tag2');
-        const selectTagsBtn = sourceCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const selectTagsBtn = sourceCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(selectTagsBtn, 'list-filter');
         selectTagsBtn.createSpan({ text: ' Select' });
-        selectTagsBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
-            mergeSourcesInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
-        }).open();
+        selectTagsBtn.onclick = () =>
+            new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+                mergeSourcesInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
+            }).open();
 
         const targetCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         targetCol.createEl('label', { text: 'Target' });
         const mergeTargetInput = new TextComponent(targetCol).setPlaceholder('#merged');
-        const targetSuggestBtn = targetCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const targetSuggestBtn = targetCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(targetSuggestBtn, 'search');
         targetSuggestBtn.createSpan({ text: ' Search' });
-        targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (tag) => {
-            mergeTargetInput.setValue(tag);
-            mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
-        }).open();
+        targetSuggestBtn.onclick = () =>
+            new TagSuggest(this.app, this.plugin, (tag) => {
+                mergeTargetInput.setValue(tag);
+                mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
+            }).open();
         new InlineTagSuggest(this.app, mergeTargetInput.inputEl, targetCol, (tag) => {
             mergeTargetInput.setValue(tag);
             mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
@@ -5029,7 +5347,11 @@ class BulkManagerSettingsDashboard {
         const mergeActionCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         const btnMerge = mergeActionCol.createEl('button', { text: 'Merge', cls: 'mod-cta btm-action-btn' });
         btnMerge.onclick = () => {
-            const sources = mergeSourcesInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
+            const sources = mergeSourcesInput
+                .getValue()
+                .split(',')
+                .map((part) => part.trim())
+                .filter(Boolean);
             const target = mergeTargetInput.getValue().trim();
             if (!sources.length || !target) {
                 new Notice('Please provide source tags and a target.');
@@ -5042,7 +5364,7 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.mergeTags(sources, target);
                     void this.updateStats();
-                },
+                }
             ).open();
         };
 
@@ -5054,12 +5376,15 @@ class BulkManagerSettingsDashboard {
         const nestParentCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         nestParentCol.createEl('label', { text: 'Parent tag' });
         const nestParentInput = new TextComponent(nestParentCol).setPlaceholder('#parent (e.g. enfermedades)');
-        const nestParentSuggestBtn = nestParentCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const nestParentSuggestBtn = nestParentCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(nestParentSuggestBtn, 'search');
         nestParentSuggestBtn.createSpan({ text: ' Search' });
-        nestParentSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (tag) => {
-            nestParentInput.setValue(tag);
-        }).open();
+        nestParentSuggestBtn.onclick = () =>
+            new TagSuggest(this.app, this.plugin, (tag) => {
+                nestParentInput.setValue(tag);
+            }).open();
         new InlineTagSuggest(this.app, nestParentInput.inputEl, nestParentCol, (tag) => {
             nestParentInput.setValue(tag);
         });
@@ -5067,18 +5392,25 @@ class BulkManagerSettingsDashboard {
         const nestChildCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         nestChildCol.createEl('label', { text: 'Tags to nest' });
         const nestChildInput = new TextComponent(nestChildCol).setPlaceholder('#tag1, #tag2, #tag3');
-        const nestSelectBtn = nestChildCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const nestSelectBtn = nestChildCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(nestSelectBtn, 'list-filter');
         nestSelectBtn.createSpan({ text: ' Select' });
-        nestSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
-            nestChildInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
-        }).open();
+        nestSelectBtn.onclick = () =>
+            new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+                nestChildInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
+            }).open();
 
         const nestActionCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         const btnNest = nestActionCol.createEl('button', { text: 'Nest', cls: 'mod-cta btm-action-btn' });
         btnNest.onclick = () => {
             const parent = nestParentInput.getValue().trim();
-            const children = nestChildInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
+            const children = nestChildInput
+                .getValue()
+                .split(',')
+                .map((part) => part.trim())
+                .filter(Boolean);
             if (!parent || !children.length) {
                 new Notice('Please provide a parent tag and at least one child tag.');
                 return;
@@ -5091,38 +5423,42 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.nestTags(parent, children);
                     void this.updateStats();
-                },
+                }
             ).open();
         };
-
-
 
         const deleteBox = contentEl.createDiv({ cls: 'btm-section-box' });
         deleteBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Delete Tags' });
         const deleteContainer = deleteBox.createDiv({ cls: 'btm-aligned-row' });
         const deleteCol = deleteContainer.createDiv({ cls: 'btm-field-column' });
         deleteCol.setAttr('style', 'grid-column: span 2;');
-        deleteCol.createEl('label', { text: 'Tags to Delete (comma separated)' });
+        deleteCol.createEl('label', { text: 'Tags to delete (comma separated)' });
         const deleteInput = new TextComponent(deleteCol).setPlaceholder('#bad-tag, #unused');
         deleteInput.inputEl.addClass('btm-full-width-input');
         const delBtnRow = deleteCol.createDiv({ attr: { style: 'display: flex; gap: 8px;' } });
         const delSelectBtn = delBtnRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(delSelectBtn, 'list-filter');
         delSelectBtn.createSpan({ text: ' Select' });
-        delSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
-            deleteInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
-        }).open();
+        delSelectBtn.onclick = () =>
+            new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+                deleteInput.setValue(tags.map((tag) => `#${tag}`).join(', '));
+            }).open();
         const delSearchBtn = delBtnRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(delSearchBtn, 'search');
         delSearchBtn.createSpan({ text: ' Search' });
-        delSearchBtn.onclick = () => new TagSuggest(this.app, this.plugin, (tag) => {
-            const current = deleteInput.getValue();
-            deleteInput.setValue(current ? `${current}, #${tag}` : `#${tag}`);
-        }).open();
+        delSearchBtn.onclick = () =>
+            new TagSuggest(this.app, this.plugin, (tag) => {
+                const current = deleteInput.getValue();
+                deleteInput.setValue(current ? `${current}, #${tag}` : `#${tag}`);
+            }).open();
 
         const btnDelete = deleteContainer.createEl('button', { text: 'Delete', cls: 'mod-warning btm-action-btn' });
         btnDelete.onclick = () => {
-            const tagsToDelete = deleteInput.getValue().split(',').map((part) => part.trim()).filter(Boolean);
+            const tagsToDelete = deleteInput
+                .getValue()
+                .split(',')
+                .map((part) => part.trim())
+                .filter(Boolean);
             if (!tagsToDelete.length) {
                 new Notice('Please provide tags to delete.');
                 return;
@@ -5134,7 +5470,7 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.deleteTags(tagsToDelete);
                     void this.updateStats();
-                },
+                }
             ).open();
         };
 
@@ -5142,7 +5478,10 @@ class BulkManagerSettingsDashboard {
 
         // Sub-section: Delete from List
         const deleteListSub = deleteBox.createDiv({ cls: 'btm-subsection-box' });
-        deleteListSub.createEl('h4', { text: 'Delete from List', attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' } });
+        deleteListSub.createEl('h4', {
+            text: 'Delete from list',
+            attr: { style: 'margin-top: 0; font-size: 1.1em; color: var(--text-accent); opacity: 0.8;' }
+        });
         deleteListSub.createEl('p', {
             text: 'Upload a plain text file with one tag per line to delete many tags at once.',
             cls: 'btm-section-desc'
@@ -5169,8 +5508,10 @@ class BulkManagerSettingsDashboard {
                     return;
                 }
                 deleteListPreview.createSpan({ text: `${parsedDeleteTags.length} tags loaded:` });
-                const previewList = deleteListPreview.createEl('ul', { attr: { style: 'margin: 4px 0; padding-left: 16px;' } });
-                parsedDeleteTags.slice(0, 8).forEach(t => {
+                const previewList = deleteListPreview.createEl('ul', {
+                    attr: { style: 'margin: 4px 0; padding-left: 16px;' }
+                });
+                parsedDeleteTags.slice(0, 8).forEach((t) => {
                     previewList.createEl('li', { text: `#${t}` });
                 });
                 if (parsedDeleteTags.length > 8) {
@@ -5180,13 +5521,23 @@ class BulkManagerSettingsDashboard {
             reader.readAsText(file, 'UTF-8');
         });
 
-        const deleteListBtnRow = deleteListSub.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px;' } });
+        const deleteListBtnRow = deleteListSub.createDiv({
+            attr: {
+                style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px;'
+            }
+        });
 
-        const chooseDeleteListBtn = deleteListBtnRow.createEl('button', { text: 'Choose file', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const chooseDeleteListBtn = deleteListBtnRow.createEl('button', {
+            text: 'Choose file',
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(chooseDeleteListBtn, 'upload');
         chooseDeleteListBtn.onclick = () => deleteListFileInput.click();
 
-        const applyDeleteListBtn = deleteListBtnRow.createEl('button', { text: 'Delete All', cls: 'mod-warning btm-action-btn' });
+        const applyDeleteListBtn = deleteListBtnRow.createEl('button', {
+            text: 'Delete all',
+            cls: 'mod-warning btm-action-btn'
+        });
         applyDeleteListBtn.onclick = () => {
             if (parsedDeleteTags.length === 0) {
                 new Notice('Please load a file first.');
@@ -5194,7 +5545,7 @@ class BulkManagerSettingsDashboard {
             }
             new BtmConfirmationModal(
                 this.app,
-                'Delete from List',
+                'Delete from list',
                 `Permanently delete ${parsedDeleteTags.length} tag(s) from the vault? This cannot be undone without using the undo history.`,
                 async () => {
                     await this.plugin.deleteTags(parsedDeleteTags);
@@ -5205,7 +5556,6 @@ class BulkManagerSettingsDashboard {
                 }
             ).open();
         };
-
 
         const patternBox = contentEl.createDiv({ cls: 'btm-section-box' });
         patternBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Pattern Rename (Regex)' });
@@ -5230,18 +5580,17 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.batchRename(pattern, patternReplaceInput.getValue());
                     void this.updateStats();
-                },
+                }
             ).open();
         };
 
         const settingsBox = contentEl.createDiv({ cls: 'btm-section-box' });
         settingsBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Bulk Settings' });
-        new Setting(settingsBox)
-            .setName('Case Strategy')
-            .addDropdown((dropdown) => dropdown
+        new Setting(settingsBox).setName('Case strategy').addDropdown((dropdown) =>
+            dropdown
                 .addOption('lowercase', 'Lowercase')
                 .addOption('uppercase', 'Uppercase')
-                .addOption('none', 'No Change')
+                .addOption('none', 'No change')
                 .setValue(this.plugin.settings.caseStrategy)
                 .onChange((value: TagLowercaseSettings['caseStrategy']) => {
                     runAsync(async () => {
@@ -5249,13 +5598,13 @@ class BulkManagerSettingsDashboard {
                         await this.plugin.saveSettings();
                         void this.updateStats();
                     });
-                }));
-        new Setting(settingsBox)
-            .setName('Separator Style')
-            .addDropdown((dropdown) => dropdown
+                })
+        );
+        new Setting(settingsBox).setName('Separator style').addDropdown((dropdown) =>
+            dropdown
                 .addOption('preserve', 'Preserve')
-                .addOption('snake', 'Snake Case')
-                .addOption('kebab', 'Kebab Case')
+                .addOption('snake', 'Snake case')
+                .addOption('kebab', 'Kebab case')
                 .setValue(this.plugin.settings.separatorStrategy)
                 .onChange((value: TagLowercaseSettings['separatorStrategy']) => {
                     runAsync(async () => {
@@ -5263,95 +5612,114 @@ class BulkManagerSettingsDashboard {
                         await this.plugin.saveSettings();
                         void this.updateStats();
                     });
-                }));
+                })
+        );
         new Setting(settingsBox)
-            .setName('Remove Special Characters')
+            .setName('Remove special characters')
             .setDesc('Removes everything except letters, numbers, hyphens (-), and underscores (_).')
-            .addToggle((toggle) => toggle
-                .setValue(this.plugin.settings.removeSpecialChars)
-                .onChange((value) => {
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.removeSpecialChars).onChange((value) => {
                     runAsync(async () => {
                         this.plugin.settings.removeSpecialChars = value;
                         await this.plugin.saveSettings();
                         void this.updateStats();
                     });
-                }));
+                })
+            );
         new Setting(settingsBox)
-            .setName('Flatten Diacritics')
+            .setName('Flatten diacritics')
             .setDesc('Converts accented characters to their plain equivalents.')
-            .addToggle((toggle) => toggle
-                .setValue(this.plugin.settings.flattenDiacritics)
-                .onChange((value) => {
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.flattenDiacritics).onChange((value) => {
                     runAsync(async () => {
                         this.plugin.settings.flattenDiacritics = value;
                         await this.plugin.saveSettings();
                         void this.updateStats();
                     });
-                }));
+                })
+            );
+        new Setting(settingsBox).setName('Apply to nested tags').addToggle((toggle) =>
+            toggle.setValue(this.plugin.settings.applyToNestedTags).onChange((value) => {
+                runAsync(async () => {
+                    this.plugin.settings.applyToNestedTags = value;
+                    await this.plugin.saveSettings();
+                    void this.updateStats();
+                });
+            })
+        );
         new Setting(settingsBox)
-            .setName('Apply to Nested Tags')
-            .addToggle((toggle) => toggle
-                .setValue(this.plugin.settings.applyToNestedTags)
-                .onChange((value) => {
-                    runAsync(async () => {
-                        this.plugin.settings.applyToNestedTags = value;
-                        await this.plugin.saveSettings();
-                        void this.updateStats();
-                    });
-                }));
-        new Setting(settingsBox)
-            .setName('Enable Scope Filter')
+            .setName('Enable scope filter')
             .setDesc('Limit operations to specific folders')
-            .addToggle((toggle) => toggle
-                .setValue(this.plugin.settings.scopeFilter.enabled)
-                .onChange((value) => {
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.scopeFilter.enabled).onChange((value) => {
                     runAsync(async () => {
                         this.plugin.settings.scopeFilter.enabled = value;
                         await this.plugin.saveSettings();
                         void this.updateStats();
                     });
-                }));
+                })
+            );
 
         new Setting(settingsBox)
-            .setName('File Pattern Filter')
+            .setName('File pattern filter')
             .setDesc('Optional regex applied to file paths when the scope filter is enabled.')
-            .addText((text) => text
-                .setPlaceholder('^Projects/')
-                .setValue(this.plugin.settings.scopeFilter.filePattern)
-                .onChange((value) => {
-                    runAsync(async () => {
-                        this.plugin.settings.scopeFilter.filePattern = value.trim();
-                        await this.plugin.saveSettings();
-                        void this.updateStats();
-                    });
-                }));
+            .addText((text) =>
+                text
+                    .setPlaceholder('^Projects/')
+                    .setValue(this.plugin.settings.scopeFilter.filePattern)
+                    .onChange((value) => {
+                        runAsync(async () => {
+                            this.plugin.settings.scopeFilter.filePattern = value.trim();
+                            await this.plugin.saveSettings();
+                            void this.updateStats();
+                        });
+                    })
+            );
 
         const scopeContainer = settingsBox.createDiv({ cls: 'btm-scope-container' });
         const includeCol = scopeContainer.createDiv({ cls: 'btm-field-column' });
-        includeCol.createEl('label', { text: 'Include Folders' });
+        includeCol.createEl('label', { text: 'Include folders' });
         const includeRow = includeCol.createDiv({ cls: 'btm-scope-input-row' });
-        const includeDisplay = includeRow.createDiv({ text: this.plugin.settings.scopeFilter.includeFolders.join(', ') || '(all)', cls: 'btm-folder-input-display' });
+        const includeDisplay = includeRow.createDiv({
+            text: this.plugin.settings.scopeFilter.includeFolders.join(', ') || '(all)',
+            cls: 'btm-folder-input-display'
+        });
         const includeBtn = includeRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(includeBtn, 'folder-plus');
-        includeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.includeFolders, async (folders) => {
-            this.plugin.settings.scopeFilter.includeFolders = folders;
-            await this.plugin.saveSettings();
-            includeDisplay.textContent = folders.join(', ') || '(all)';
-            void this.updateStats();
-        }).open();
+        includeBtn.onclick = () =>
+            new FolderSelectModal(
+                this.app,
+                this.plugin,
+                this.plugin.settings.scopeFilter.includeFolders,
+                async (folders) => {
+                    this.plugin.settings.scopeFilter.includeFolders = folders;
+                    await this.plugin.saveSettings();
+                    includeDisplay.textContent = folders.join(', ') || '(all)';
+                    void this.updateStats();
+                }
+            ).open();
 
         const excludeCol = scopeContainer.createDiv({ cls: 'btm-field-column' });
-        excludeCol.createEl('label', { text: 'Exclude Folders' });
+        excludeCol.createEl('label', { text: 'Exclude folders' });
         const excludeRow = excludeCol.createDiv({ cls: 'btm-scope-input-row' });
-        const excludeDisplay = excludeRow.createDiv({ text: this.plugin.settings.scopeFilter.excludeFolders.join(', ') || '(none)', cls: 'btm-folder-input-display' });
+        const excludeDisplay = excludeRow.createDiv({
+            text: this.plugin.settings.scopeFilter.excludeFolders.join(', ') || '(none)',
+            cls: 'btm-folder-input-display'
+        });
         const excludeBtn = excludeRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(excludeBtn, 'folder-minus');
-        excludeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.excludeFolders, async (folders) => {
-            this.plugin.settings.scopeFilter.excludeFolders = folders;
-            await this.plugin.saveSettings();
-            excludeDisplay.textContent = folders.join(', ') || '(none)';
-            void this.updateStats();
-        }).open();
+        excludeBtn.onclick = () =>
+            new FolderSelectModal(
+                this.app,
+                this.plugin,
+                this.plugin.settings.scopeFilter.excludeFolders,
+                async (folders) => {
+                    this.plugin.settings.scopeFilter.excludeFolders = folders;
+                    await this.plugin.saveSettings();
+                    excludeDisplay.textContent = folders.join(', ') || '(none)';
+                    void this.updateStats();
+                }
+            ).open();
 
         const bulkActionRow = settingsBox.createDiv({ cls: 'btm-action-row' });
         const convertBtn = this.createIconButton(bulkActionRow, 'refresh-cw', 'Convert All', 'mod-cta');
@@ -5379,7 +5747,7 @@ class BulkManagerSettingsDashboard {
                     await this.plugin.convertTagFormat(files, 'inline', true);
                     await this.plugin.convertWikiLinkFormat(files, 'inline', true);
                     void this.updateStats();
-                },
+                }
             ).open();
         };
         const btnAllList = this.createIconButton(utilRow, 'list-minus', 'Standardise to YAML List');
@@ -5393,7 +5761,7 @@ class BulkManagerSettingsDashboard {
                     await this.plugin.convertTagFormat(files, 'list', true);
                     await this.plugin.convertWikiLinkFormat(files, 'list', true);
                     void this.updateStats();
-                },
+                }
             ).open();
         };
 
@@ -5401,9 +5769,15 @@ class BulkManagerSettingsDashboard {
         actionBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Other Actions' });
         const actionRowBottom = actionBox.createDiv({ cls: 'btm-action-row' });
         this.createActionButton(actionRowBottom, 'list', 'Tag List', async () => this.plugin.generateTagList());
-        this.createActionButton(actionRowBottom, 'git-branch', 'Tag Nesting', () => new TagHierarchyModal(this.app, this.plugin).open());
-        this.createActionButton(actionRowBottom, 'alert-circle', 'Orphans', () => new OrphanTagsModal(this.app, this.plugin).open());
-        this.createActionButton(actionRowBottom, 'history', 'History', () => new HistoryModal(this.app, this.plugin).open());
+        this.createActionButton(actionRowBottom, 'git-branch', 'Tag Nesting', () =>
+            new TagHierarchyModal(this.app, this.plugin).open()
+        );
+        this.createActionButton(actionRowBottom, 'alert-circle', 'Orphans', () =>
+            new OrphanTagsModal(this.app, this.plugin).open()
+        );
+        this.createActionButton(actionRowBottom, 'history', 'History', () =>
+            new HistoryModal(this.app, this.plugin).open()
+        );
     }
 
     createActionButton(container: HTMLElement, icon: string, text: string, action: () => void | Promise<void>) {
@@ -5473,7 +5847,7 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.convertAllToCase('uppercase');
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                },
+                }
             ).open();
         };
         const btnLower = caseButtons.createEl('button', { text: 'Convert to lower', cls: 'btm-mini-case-btn' });
@@ -5485,7 +5859,7 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.convertAllToCase('lowercase');
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                },
+                }
             ).open();
         };
 
@@ -5494,7 +5868,12 @@ class BulkManagerSettingsDashboard {
         this.createProgressBar(sepBox, stats.separatorStats.consistency);
         const sepDetails = sepBox.createDiv({ cls: 'btm-metric-details' });
         addMetricLink(sepDetails, stats.separatorStats.hyphen.length, 'kebab-case', stats.separatorStats.hyphen);
-        addMetricLink(sepDetails, stats.separatorStats.underscore.length, 'snake_case', stats.separatorStats.underscore);
+        addMetricLink(
+            sepDetails,
+            stats.separatorStats.underscore.length,
+            'snake_case',
+            stats.separatorStats.underscore
+        );
         addMetricLink(sepDetails, stats.separatorStats.both.length, 'mixed', stats.separatorStats.both);
         addMetricLink(sepDetails, stats.separatorStats.none.length, 'none', stats.separatorStats.none);
 
@@ -5503,34 +5882,53 @@ class BulkManagerSettingsDashboard {
         this.createProgressBar(specialBox, stats.specialCharStats.consistency);
         const specialDetails = specialBox.createDiv({ cls: 'btm-metric-details' });
         addMetricLink(specialDetails, stats.specialCharStats.clean.length, 'clean tags', stats.specialCharStats.clean);
-        addMetricLink(specialDetails, stats.specialCharStats.withSpecial.length, 'with special chars', stats.specialCharStats.withSpecial);
+        addMetricLink(
+            specialDetails,
+            stats.specialCharStats.withSpecial.length,
+            'with special chars',
+            stats.specialCharStats.withSpecial
+        );
 
         if (stats.quotedFrontmatterCount > 0) {
             const fmLink = specialDetails.createEl('a', {
                 text: `${stats.quotedFrontmatterCount} notes with quoted properties`,
-                cls: 'btm-stat-link btm-warning-link',
+                cls: 'btm-stat-link btm-warning-link'
             });
-            fmLink.onclick = () => new SimpleFileListModal(this.app, 'Notes with Quoted Properties', stats.quotedFrontmatterFiles).open();
+            fmLink.onclick = () =>
+                new SimpleFileListModal(this.app, 'Notes with Quoted Properties', stats.quotedFrontmatterFiles).open();
         }
 
         const formatBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         formatBox.createDiv({ text: 'Tag Format Style', cls: 'btm-metric-label' });
 
-        const formatContent = formatBox.createDiv({ cls: 'btm-metric-details', attr: { style: 'display:block; margin-bottom: 5px;' } });
+        const formatContent = formatBox.createDiv({
+            cls: 'btm-metric-details',
+            attr: { style: 'display:block; margin-bottom: 5px;' }
+        });
         const createFormatLink = (label: string, tagFiles: TFile[]) => {
             if (tagFiles.length > 0) {
-                const link = formatContent.createEl('a', { text: `${label}: ${tagFiles.length} files`, cls: 'btm-stat-link', attr: { style: 'display:block;' } });
+                const link = formatContent.createEl('a', {
+                    text: `${label}: ${tagFiles.length} files`,
+                    cls: 'btm-stat-link',
+                    attr: { style: 'display:block;' }
+                });
                 link.onclick = () => new SimpleFileListModal(this.app, label, tagFiles).open();
             } else {
-                formatContent.createDiv({ text: `${label}: 0 files`, attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
+                formatContent.createDiv({
+                    text: `${label}: 0 files`,
+                    attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' }
+                });
             }
         };
 
         createFormatLink('YAML List', stats.formatStats.yamlList);
         createFormatLink('Inline Array', stats.formatStats.inlineArray);
 
-        const formatActions = formatBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
-        const btnToInline = formatActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
+        const formatActions = formatBox.createDiv({
+            cls: 'btm-format-actions',
+            attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' }
+        });
+        const btnToInline = formatActions.createEl('button', { text: 'Convert all to inline', cls: 'btm-small-btn' });
         btnToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -5539,11 +5937,11 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.convertTagFormat(files, 'inline');
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                },
+                }
             ).open();
         };
 
-        const btnToList = formatActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
+        const btnToList = formatActions.createEl('button', { text: 'Convert all to list', cls: 'btm-small-btn' });
         btnToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -5552,7 +5950,7 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.convertTagFormat(files, 'list');
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                },
+                }
             ).open();
         };
 
@@ -5561,7 +5959,10 @@ class BulkManagerSettingsDashboard {
         const nestDetails = nestBox.createDiv({ cls: 'btm-metric-details' });
         if (stats.nestedFiles.length > 0) {
             addMetricLink(nestDetails, stats.nestingStats.flat.length, 'flat', stats.nestingStats.flat);
-            const nestedLink = nestDetails.createEl('a', { text: `${stats.nestedFiles.length} notes with nested tags`, cls: 'btm-stat-link' });
+            const nestedLink = nestDetails.createEl('a', {
+                text: `${stats.nestedFiles.length} notes with nested tags`,
+                cls: 'btm-stat-link'
+            });
             nestedLink.onclick = () => new NestedFilesModal(this.app, stats.nestedFiles).open();
         } else {
             nestDetails.createSpan({ text: '0 notes with nested tags' });
@@ -5570,27 +5971,45 @@ class BulkManagerSettingsDashboard {
         const locBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         locBox.createDiv({ text: 'Locations', cls: 'btm-metric-label' });
         const locDetails = locBox.createDiv({ cls: 'btm-metric-details' });
-        addMetricLink(locDetails, stats.locationStats.frontmatter.length, 'frontmatter', stats.locationStats.frontmatter);
+        addMetricLink(
+            locDetails,
+            stats.locationStats.frontmatter.length,
+            'frontmatter',
+            stats.locationStats.frontmatter
+        );
         addMetricLink(locDetails, stats.locationStats.body.length, 'body', stats.locationStats.body);
 
         const wikiBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         wikiBox.createDiv({ text: 'Wiki Link Format Style', cls: 'btm-metric-label' });
 
-        const wikiContent = wikiBox.createDiv({ cls: 'btm-metric-details', attr: { style: 'display:block; margin-bottom: 5px;' } });
+        const wikiContent = wikiBox.createDiv({
+            cls: 'btm-metric-details',
+            attr: { style: 'display:block; margin-bottom: 5px;' }
+        });
         const createWikiLinkStats = (label: string, wikiFiles: TFile[]) => {
             if (wikiFiles.length > 0) {
-                const link = wikiContent.createEl('a', { text: `${label}: ${wikiFiles.length} files`, cls: 'btm-stat-link', attr: { style: 'display:block;' } });
+                const link = wikiContent.createEl('a', {
+                    text: `${label}: ${wikiFiles.length} files`,
+                    cls: 'btm-stat-link',
+                    attr: { style: 'display:block;' }
+                });
                 link.onclick = () => new SimpleFileListModal(this.app, label, wikiFiles).open();
             } else {
-                wikiContent.createDiv({ text: `${label}: 0 files`, attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
+                wikiContent.createDiv({
+                    text: `${label}: 0 files`,
+                    attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' }
+                });
             }
         };
 
         createWikiLinkStats('YAML List', stats.wikiLinkStats.yamlList);
         createWikiLinkStats('Inline Array', stats.wikiLinkStats.inlineArray);
 
-        const wikiActions = wikiBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
-        const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
+        const wikiActions = wikiBox.createDiv({
+            cls: 'btm-format-actions',
+            attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' }
+        });
+        const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert all to inline', cls: 'btm-small-btn' });
         btnWikiToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -5599,11 +6018,11 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.convertWikiLinkFormat(files, 'inline');
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                },
+                }
             ).open();
         };
 
-        const btnWikiToList = wikiActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
+        const btnWikiToList = wikiActions.createEl('button', { text: 'Convert all to list', cls: 'btm-small-btn' });
         btnWikiToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -5612,7 +6031,7 @@ class BulkManagerSettingsDashboard {
                 async () => {
                     await this.plugin.convertWikiLinkFormat(files, 'list');
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                },
+                }
             ).open();
         };
 
@@ -5621,7 +6040,7 @@ class BulkManagerSettingsDashboard {
             const inlineLink = locBox.createEl('a', {
                 text: `${stats.inlineFiles.length} notes with tags in body`,
                 cls: 'btm-stat-link',
-                attr: { style: 'display:block; margin-top:4px;' },
+                attr: { style: 'display:block; margin-top:4px;' }
             });
             inlineLink.onclick = () => new InlineTagsModal(this.app, stats.inlineFiles).open();
         }
@@ -5638,13 +6057,21 @@ class BulkManagerSettingsDashboard {
 
             const dupLink = dupDetails.createEl('a', {
                 text: `${stats.caseDuplicates.length} pairs of duplicate tags`,
-                cls: 'btm-stat-link btm-warning-link',
+                cls: 'btm-stat-link btm-warning-link'
             });
             dupLink.onclick = () => {
-                new TagListModal(this.app, 'Case Duplicates', stats.caseDuplicates.flatMap((d) => d.variants)).open();
+                new TagListModal(
+                    this.app,
+                    'Case Duplicates',
+                    stats.caseDuplicates.flatMap((d) => d.variants)
+                ).open();
             };
 
-            const mergeAllBtn = dupBox.createEl('button', { text: 'Merge all to canonical', cls: 'btm-small-btn btm-warning-btn', attr: { style: 'margin-top: auto;' } });
+            const mergeAllBtn = dupBox.createEl('button', {
+                text: 'Merge all to canonical',
+                cls: 'btm-small-btn btm-warning-btn',
+                attr: { style: 'margin-top: auto;' }
+            });
             setTooltip(mergeAllBtn, 'Merge all case variants into their most-used versions');
             mergeAllBtn.onclick = () => {
                 new BtmConfirmationModal(
@@ -5666,7 +6093,7 @@ class BulkManagerSettingsDashboard {
                         progressModal.close();
                         new Notice('Finished merging case duplicates.');
                         this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                    },
+                    }
                 ).open();
             };
         }
@@ -5687,8 +6114,10 @@ class BulkManagerSettingsDashboard {
         const warningRow = this.invalidContentEl.createDiv({ cls: 'btm-invalid-warning' });
         const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
         setIcon(iconEl, 'alert-triangle');
-        warningRow.createSpan({ text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? 's' : ''} with invalid tags` });
-        const fixBtn = warningRow.createEl('button', { text: 'Fix Invalid', cls: 'mod-warning btm-fix-invalid-btn' });
+        warningRow.createSpan({
+            text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? 's' : ''} with invalid tags`
+        });
+        const fixBtn = warningRow.createEl('button', { text: 'Fix invalid', cls: 'mod-warning btm-fix-invalid-btn' });
         fixBtn.onclick = () => new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
 
         const list = this.invalidContentEl.createDiv({ cls: 'btm-invalid-mini-list' });
@@ -5743,13 +6172,13 @@ class TagManagerModal extends Modal {
         setIcon(arrow, 'chevron-down');
 
         this.statsEl = overviewBox.createDiv({ cls: 'btm-collapsible-content' });
-        
+
         // Fix One: Invalid Tags Block (Directly below Overview)
         this.invalidBlock = contentEl.createDiv({ cls: 'btm-section-box btm-invalid-block' });
         this.invalidBlock.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Invalid Tags (Real-time)' });
         this.invalidContentEl = this.invalidBlock.createDiv({ cls: 'btm-invalid-content' });
 
-        this.updateStats().catch(e => console.error("Failed to update stats", e));
+        this.updateStats().catch((e) => console.error('Failed to update stats', e));
 
         // Toggle logic
         let isExpanded = true;
@@ -5764,8 +6193,6 @@ class TagManagerModal extends Modal {
             }
         };
 
-
-
         // --- Merge Section ---
         const mergeBox = contentEl.createDiv({ cls: 'btm-section-box' });
         mergeBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Merge Tags' });
@@ -5776,12 +6203,15 @@ class TagManagerModal extends Modal {
         const sourceCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         sourceCol.createEl('label', { text: 'Source tags' });
         this.mergeSourcesInput = new TextComponent(sourceCol).setPlaceholder('#tag1, #tag2');
-        const selectTagsBtn = sourceCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const selectTagsBtn = sourceCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(selectTagsBtn, 'list-filter');
         selectTagsBtn.createSpan({ text: ' Select' });
-        selectTagsBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
-            this.mergeSourcesInput.setValue(tags.map(t => '#' + t).join(', '));
-        }).open();
+        selectTagsBtn.onclick = () =>
+            new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+                this.mergeSourcesInput.setValue(tags.map((t) => '#' + t).join(', '));
+            }).open();
 
         // Col 2: Target
         const targetCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
@@ -5807,19 +6237,26 @@ class TagManagerModal extends Modal {
             }
         });
 
-        const targetSuggestBtn = targetCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const targetSuggestBtn = targetCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(targetSuggestBtn, 'search');
         targetSuggestBtn.createSpan({ text: ' Search' });
-        targetSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
-            this.mergeTargetInput.setValue(t);
-            this.mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
-        }).open();
+        targetSuggestBtn.onclick = () =>
+            new TagSuggest(this.app, this.plugin, (t) => {
+                this.mergeTargetInput.setValue(t);
+                this.mergeTargetInput.inputEl.dispatchEvent(new Event('input'));
+            }).open();
 
         // Col 3: Action
         const mergeActionCol = mergeContainer.createDiv({ cls: 'btm-field-column' });
         const btnMerge = mergeActionCol.createEl('button', { text: 'Merge', cls: 'mod-cta btm-action-btn' });
         btnMerge.onclick = () => {
-            const sources = this.mergeSourcesInput.getValue().split(',').map(s => s.trim()).filter(s => s);
+            const sources = this.mergeSourcesInput
+                .getValue()
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => s);
             const target = this.mergeTargetInput.getValue().trim();
             if (sources.length > 0 && target) {
                 new BtmConfirmationModal(
@@ -5851,31 +6288,41 @@ class TagManagerModal extends Modal {
             nestParentInput.setValue(t);
         });
 
-        const nestParentSuggestBtn = nestParentCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const nestParentSuggestBtn = nestParentCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(nestParentSuggestBtn, 'search');
         nestParentSuggestBtn.createSpan({ text: ' Search' });
-        nestParentSuggestBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
-            nestParentInput.setValue(t);
-        }).open();
+        nestParentSuggestBtn.onclick = () =>
+            new TagSuggest(this.app, this.plugin, (t) => {
+                nestParentInput.setValue(t);
+            }).open();
 
         // Col 2: Child tags
         const nestChildCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         nestChildCol.createEl('label', { text: 'Tags to nest' });
         const nestChildInput = new TextComponent(nestChildCol).setPlaceholder('#tag1, #tag2, #tag3');
 
-        const nestSelectBtn = nestChildCol.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const nestSelectBtn = nestChildCol.createEl('button', {
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(nestSelectBtn, 'list-filter');
         nestSelectBtn.createSpan({ text: ' Select' });
-        nestSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
-            nestChildInput.setValue(tags.map(t => '#' + t).join(', '));
-        }).open();
+        nestSelectBtn.onclick = () =>
+            new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+                nestChildInput.setValue(tags.map((t) => '#' + t).join(', '));
+            }).open();
 
         // Col 3: Action
         const nestActionCol = nestContainer.createDiv({ cls: 'btm-field-column' });
         const btnNest = nestActionCol.createEl('button', { text: 'Nest', cls: 'mod-cta btm-action-btn' });
         btnNest.onclick = () => {
             const parent = nestParentInput.getValue().trim();
-            const children = nestChildInput.getValue().split(',').map(s => s.trim()).filter(s => s);
+            const children = nestChildInput
+                .getValue()
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => s);
             if (parent && children.length > 0) {
                 const parentClean = parent.replace(/^#/, '');
                 new BtmConfirmationModal(
@@ -5894,7 +6341,7 @@ class TagManagerModal extends Modal {
 
         // --- Batch Rename (table) ---
         const batchBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        batchBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Rename Tags' });
+        batchBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Rename tags' });
         batchBox.createEl('p', {
             text: 'Rename multiple tags at once. Each row is an independent old → new pair.',
             cls: 'btm-section-desc'
@@ -5924,7 +6371,7 @@ class TagManagerModal extends Modal {
             const removeBtn = row.createEl('button', { cls: 'btm-icon-btn btm-shrink-0' });
             setIcon(removeBtn, 'x');
             removeBtn.onclick = () => {
-                const idx = batchPairs.findIndex(p => p.row === row);
+                const idx = batchPairs.findIndex((p) => p.row === row);
                 if (idx !== -1) batchPairs.splice(idx, 1);
                 row.remove();
             };
@@ -5936,16 +6383,21 @@ class TagManagerModal extends Modal {
         addBatchRow();
         addBatchRow();
 
-        const batchControlRow = batchBox.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: center;' } });
+        const batchControlRow = batchBox.createDiv({
+            attr: { style: 'display: flex; gap: 8px; align-items: center;' }
+        });
 
-        const addRowBtn = batchControlRow.createEl('button', { text: '+ Add row', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const addRowBtn = batchControlRow.createEl('button', {
+            text: '+ Add row',
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         addRowBtn.onclick = () => addBatchRow();
 
         const btnBatchRename = batchControlRow.createEl('button', { text: 'Apply', cls: 'mod-cta btm-action-btn' });
         btnBatchRename.onclick = () => {
             const pairs = batchPairs
-                .map(p => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
-                .filter(p => p.from && p.to);
+                .map((p) => ({ from: p.from.getValue().trim(), to: p.to.getValue().trim() }))
+                .filter((p) => p.from && p.to);
 
             if (pairs.length === 0) {
                 new Notice('Please fill at least one rename pair.');
@@ -5954,7 +6406,7 @@ class TagManagerModal extends Modal {
 
             new BtmConfirmationModal(
                 this.app,
-                'Rename Tags',
+                'Rename tags',
                 `Apply ${pairs.length} rename pair(s) across the vault?`,
                 async () => {
                     this.close();
@@ -5965,7 +6417,7 @@ class TagManagerModal extends Modal {
 
         // --- Rename from CSV Section ---
         const csvBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        csvBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Batch Rename from CSV' });
+        csvBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Batch rename from CSV' });
         csvBox.createEl('p', {
             text: 'Upload a CSV with columns old_tag,new_tag to rename many tags at once.',
             cls: 'btm-section-desc'
@@ -5997,8 +6449,10 @@ class TagManagerModal extends Modal {
                     return;
                 }
                 csvPreview.createSpan({ text: `${parsedCsvPairs.length} pairs loaded:`, cls: 'btm-csv-count' });
-                const previewList = csvPreview.createEl('ul', { attr: { style: 'margin: 4px 0; padding-left: 16px;' } });
-                parsedCsvPairs.slice(0, 8).forEach(p => {
+                const previewList = csvPreview.createEl('ul', {
+                    attr: { style: 'margin: 4px 0; padding-left: 16px;' }
+                });
+                parsedCsvPairs.slice(0, 8).forEach((p) => {
                     previewList.createEl('li', { text: `#${p.from} → #${p.to}` });
                 });
                 if (parsedCsvPairs.length > 8) {
@@ -6010,7 +6464,10 @@ class TagManagerModal extends Modal {
 
         const csvBtnRow = csvCol.createDiv({ attr: { style: 'display: flex; gap: 8px; margin-top: 8px;' } });
 
-        const uploadBtn = csvBtnRow.createEl('button', { text: 'Choose CSV', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const uploadBtn = csvBtnRow.createEl('button', {
+            text: 'Choose CSV',
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         const uploadIcon = uploadBtn.createSpan({ cls: 'btm-icon' });
         setIcon(uploadIcon, 'upload');
         uploadBtn.prepend(uploadIcon);
@@ -6025,7 +6482,7 @@ class TagManagerModal extends Modal {
             }
             new BtmConfirmationModal(
                 this.app,
-                'Batch Rename from CSV',
+                'Batch rename from CSV',
                 `Apply ${parsedCsvPairs.length} rename pairs across the vault?`,
                 async () => {
                     this.close();
@@ -6044,7 +6501,7 @@ class TagManagerModal extends Modal {
         const deleteCol = deleteContainer.createDiv({ cls: 'btm-field-column' });
         deleteCol.setAttr('style', 'grid-column: span 2;');
 
-        deleteCol.createEl('label', { text: 'Tags to Delete (comma separated)' });
+        deleteCol.createEl('label', { text: 'Tags to delete (comma separated)' });
         this.deleteInput = new TextComponent(deleteCol).setPlaceholder('#bad-tag, #unused');
         this.deleteInput.inputEl.addClass('btm-full-width-input');
 
@@ -6052,22 +6509,28 @@ class TagManagerModal extends Modal {
         const delSelectBtn = delBtnRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(delSelectBtn, 'list-filter');
         delSelectBtn.createSpan({ text: ' Select' });
-        delSelectBtn.onclick = () => new MultiTagSelectModal(this.app, this.plugin, (tags) => {
-            this.deleteInput.setValue(tags.map(t => '#' + t).join(', '));
-        }).open();
+        delSelectBtn.onclick = () =>
+            new MultiTagSelectModal(this.app, this.plugin, (tags) => {
+                this.deleteInput.setValue(tags.map((t) => '#' + t).join(', '));
+            }).open();
 
         const delSearchBtn = delBtnRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(delSearchBtn, 'search');
         delSearchBtn.createSpan({ text: ' Search' });
-        delSearchBtn.onclick = () => new TagSuggest(this.app, this.plugin, (t) => {
-            const current = this.deleteInput.getValue();
-            this.deleteInput.setValue(current ? current + ', #' + t : '#' + t);
-        }).open();
+        delSearchBtn.onclick = () =>
+            new TagSuggest(this.app, this.plugin, (t) => {
+                const current = this.deleteInput.getValue();
+                this.deleteInput.setValue(current ? current + ', #' + t : '#' + t);
+            }).open();
 
         // Col 3: Action
         const btnDelete = deleteContainer.createEl('button', { text: 'Delete', cls: 'mod-warning btm-action-btn' });
         btnDelete.onclick = () => {
-            const tags = this.deleteInput.getValue().split(',').map(s => s.trim()).filter(s => s);
+            const tags = this.deleteInput
+                .getValue()
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => s);
             if (tags.length > 0) {
                 new BtmConfirmationModal(
                     this.app,
@@ -6085,7 +6548,7 @@ class TagManagerModal extends Modal {
 
         // --- Delete from List Section ---
         const deleteListBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        deleteListBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Delete from List' });
+        deleteListBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Delete from list' });
         deleteListBox.createEl('p', {
             text: 'Upload a plain text file with one tag per line to delete many tags at once.',
             cls: 'btm-section-desc'
@@ -6112,8 +6575,10 @@ class TagManagerModal extends Modal {
                     return;
                 }
                 deleteListPreview2.createSpan({ text: `${parsedDeleteTags2.length} tags loaded:` });
-                const previewList = deleteListPreview2.createEl('ul', { attr: { style: 'margin: 4px 0; padding-left: 16px;' } });
-                parsedDeleteTags2.slice(0, 8).forEach(t => {
+                const previewList = deleteListPreview2.createEl('ul', {
+                    attr: { style: 'margin: 4px 0; padding-left: 16px;' }
+                });
+                parsedDeleteTags2.slice(0, 8).forEach((t) => {
                     previewList.createEl('li', { text: `#${t}` });
                 });
                 if (parsedDeleteTags2.length > 8) {
@@ -6123,13 +6588,23 @@ class TagManagerModal extends Modal {
             reader.readAsText(file, 'UTF-8');
         });
 
-        const deleteListBtnRow2 = deleteListBox.createDiv({ attr: { style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px;' } });
+        const deleteListBtnRow2 = deleteListBox.createDiv({
+            attr: {
+                style: 'display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 8px;'
+            }
+        });
 
-        const chooseDeleteListBtn2 = deleteListBtnRow2.createEl('button', { text: 'Choose file', cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
+        const chooseDeleteListBtn2 = deleteListBtnRow2.createEl('button', {
+            text: 'Choose file',
+            cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn'
+        });
         setIcon(chooseDeleteListBtn2, 'upload');
         chooseDeleteListBtn2.onclick = () => deleteListFileInput2.click();
 
-        const applyDeleteListBtn2 = deleteListBtnRow2.createEl('button', { text: 'Delete All', cls: 'mod-warning btm-action-btn' });
+        const applyDeleteListBtn2 = deleteListBtnRow2.createEl('button', {
+            text: 'Delete all',
+            cls: 'mod-warning btm-action-btn'
+        });
         applyDeleteListBtn2.onclick = () => {
             if (parsedDeleteTags2.length === 0) {
                 new Notice('Please load a file first.');
@@ -6137,7 +6612,7 @@ class TagManagerModal extends Modal {
             }
             new BtmConfirmationModal(
                 this.app,
-                'Delete from List',
+                'Delete from list',
                 `Permanently delete ${parsedDeleteTags2.length} tag(s) from the vault? This cannot be undone without using the undo history.`,
                 async () => {
                     this.close();
@@ -6145,7 +6620,6 @@ class TagManagerModal extends Modal {
                 }
             ).open();
         };
-
 
         // --- Pattern Rename Section ---
         const patternBox = contentEl.createDiv({ cls: 'btm-section-box' });
@@ -6187,118 +6661,124 @@ class TagManagerModal extends Modal {
         const settingsBox = contentEl.createDiv({ cls: 'btm-section-box' });
         settingsBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Bulk Settings' });
 
-        new Setting(settingsBox)
-            .setName('Case Strategy')
-            .addDropdown(dropdown => dropdown
+        new Setting(settingsBox).setName('Case strategy').addDropdown((dropdown) =>
+            dropdown
                 .addOption('lowercase', 'Lowercase')
                 .addOption('uppercase', 'Uppercase')
-                .addOption('none', 'No Change')
+                .addOption('none', 'No change')
                 .setValue(this.plugin.settings.caseStrategy)
                 .onChange((value: TagLowercaseSettings['caseStrategy']) => {
                     runAsync(async () => {
                         this.plugin.settings.caseStrategy = value;
                         await this.plugin.saveSettings();
-                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                        this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     });
-                }));
+                })
+        );
 
-        new Setting(settingsBox)
-            .setName('Separator Style')
-            .addDropdown(dropdown => dropdown
+        new Setting(settingsBox).setName('Separator style').addDropdown((dropdown) =>
+            dropdown
                 .addOption('preserve', 'Preserve')
-                .addOption('snake', 'Snake Case')
-                .addOption('kebab', 'Kebab Case')
+                .addOption('snake', 'Snake case')
+                .addOption('kebab', 'Kebab case')
                 .setValue(this.plugin.settings.separatorStrategy)
                 .onChange((value: TagLowercaseSettings['separatorStrategy']) => {
                     runAsync(async () => {
                         this.plugin.settings.separatorStrategy = value;
                         await this.plugin.saveSettings();
-                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                        this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     });
-                }));
+                })
+        );
 
         new Setting(settingsBox)
-            .setName('Remove Special Characters')
+            .setName('Remove special characters')
             .setDesc('Removes everything except letters, numbers, hyphens (-), and underscores (_).')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.removeSpecialChars)
-                .onChange((value) => {
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.removeSpecialChars).onChange((value) => {
                     runAsync(async () => {
                         this.plugin.settings.removeSpecialChars = value;
                         await this.plugin.saveSettings();
-                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                        this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     });
-                }));
+                })
+            );
 
         new Setting(settingsBox)
-            .setName('Flatten Diacritics')
+            .setName('Flatten diacritics')
             .setDesc('Converts accented characters to their plain equivalents (e.g., á → a, å → a).')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.flattenDiacritics)
-                .onChange((value) => {
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.flattenDiacritics).onChange((value) => {
                     runAsync(async () => {
                         this.plugin.settings.flattenDiacritics = value;
                         await this.plugin.saveSettings();
-                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                        this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     });
-                }));
+                })
+            );
 
-        new Setting(settingsBox)
-            .setName('Apply to Nested Tags')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.applyToNestedTags)
-                .onChange((value) => {
-                    runAsync(async () => {
-                        this.plugin.settings.applyToNestedTags = value;
-                        await this.plugin.saveSettings();
-                        this.updateStats().catch(e => console.error("Failed to update stats", e));
-                    });
-                }));
+        new Setting(settingsBox).setName('Apply to nested tags').addToggle((toggle) =>
+            toggle.setValue(this.plugin.settings.applyToNestedTags).onChange((value) => {
+                runAsync(async () => {
+                    this.plugin.settings.applyToNestedTags = value;
+                    await this.plugin.saveSettings();
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
+                });
+            })
+        );
 
         // --- Scope Filter (Moved inside Bulk Settings) ---
-        new Setting(settingsBox).setName('Scope Filter').setHeading();
+        new Setting(settingsBox).setName('Scope filter').setHeading();
         new Setting(settingsBox)
-            .setName('Enable Scope Filter')
+            .setName('Enable scope filter')
             .setDesc('Limit operations to specific folders')
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.scopeFilter.enabled)
-                .onChange((value) => {
+            .addToggle((toggle) =>
+                toggle.setValue(this.plugin.settings.scopeFilter.enabled).onChange((value) => {
                     runAsync(async () => {
                         this.plugin.settings.scopeFilter.enabled = value;
                         await this.plugin.saveSettings();
-                        this.updateStats().catch(e => console.error("Failed to update stats", e));
+                        this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     });
-                }));
+                })
+            );
 
         const scopeContainer = settingsBox.createDiv({ cls: 'btm-scope-container' });
 
         // Include
         const includeCol = scopeContainer.createDiv({ cls: 'btm-field-column' });
-        includeCol.createEl('label', { text: 'Include Folders' });
+        includeCol.createEl('label', { text: 'Include folders' });
         const includeRow = includeCol.createDiv({ cls: 'btm-scope-input-row' });
-        const includeDisplay = includeRow.createDiv({ text: this.plugin.settings.scopeFilter.includeFolders.join(', ') || '(all)', cls: 'btm-folder-input-display' });
+        const includeDisplay = includeRow.createDiv({
+            text: this.plugin.settings.scopeFilter.includeFolders.join(', ') || '(all)',
+            cls: 'btm-folder-input-display'
+        });
         const includeBtn = includeRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(includeBtn, 'folder-plus');
-        includeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.includeFolders, async (f) => {
-            this.plugin.settings.scopeFilter.includeFolders = f;
-            await this.plugin.saveSettings();
-            includeDisplay.textContent = f.join(', ') || '(all)';
-            this.updateStats().catch(e => console.error("Failed to update stats", e));
-        }).open();
+        includeBtn.onclick = () =>
+            new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.includeFolders, async (f) => {
+                this.plugin.settings.scopeFilter.includeFolders = f;
+                await this.plugin.saveSettings();
+                includeDisplay.textContent = f.join(', ') || '(all)';
+                this.updateStats().catch((e) => console.error('Failed to update stats', e));
+            }).open();
 
         // Exclude
         const excludeCol = scopeContainer.createDiv({ cls: 'btm-field-column' });
-        excludeCol.createEl('label', { text: 'Exclude Folders' });
+        excludeCol.createEl('label', { text: 'Exclude folders' });
         const excludeRow = excludeCol.createDiv({ cls: 'btm-scope-input-row' });
-        const excludeDisplay = excludeRow.createDiv({ text: this.plugin.settings.scopeFilter.excludeFolders.join(', ') || '(none)', cls: 'btm-folder-input-display' });
+        const excludeDisplay = excludeRow.createDiv({
+            text: this.plugin.settings.scopeFilter.excludeFolders.join(', ') || '(none)',
+            cls: 'btm-folder-input-display'
+        });
         const excludeBtn = excludeRow.createEl('button', { cls: 'btm-suggest-btn btm-icon-btn btm-small-center-btn' });
         setIcon(excludeBtn, 'folder-minus');
-        excludeBtn.onclick = () => new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.excludeFolders, async (f) => {
-            this.plugin.settings.scopeFilter.excludeFolders = f;
-            await this.plugin.saveSettings();
-            excludeDisplay.textContent = f.join(', ') || '(none)';
-            this.updateStats().catch(e => console.error("Failed to update stats", e));
-        }).open();
+        excludeBtn.onclick = () =>
+            new FolderSelectModal(this.app, this.plugin, this.plugin.settings.scopeFilter.excludeFolders, async (f) => {
+                this.plugin.settings.scopeFilter.excludeFolders = f;
+                await this.plugin.saveSettings();
+                excludeDisplay.textContent = f.join(', ') || '(none)';
+                this.updateStats().catch((e) => console.error('Failed to update stats', e));
+            }).open();
 
         // Relocated Buttons
         const bulkActionRow = settingsBox.createDiv({ cls: 'btm-action-row' });
@@ -6312,13 +6792,11 @@ class TagManagerModal extends Modal {
 
         // Removed Fix Invalid from here (it belongs in the Invalid Tags block below Overview)
 
-
-
         // --- Metadata Utilities ---
         const utilBox = contentEl.createDiv({ cls: 'btm-section-box' });
         utilBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Metadata Utilities' });
         const utilRow = utilBox.createDiv({ cls: 'btm-util-column' });
-        
+
         const btnClean = this.createIconButton(utilRow, 'file-check', 'Clean front matter formatting');
         setTooltip(btnClean, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
         btnClean.onclick = () => void this.plugin.standardiseProperties();
@@ -6334,14 +6812,14 @@ class TagManagerModal extends Modal {
                 async () => {
                     const progressModal = new ProgressModal(this.app, files.length * 2);
                     progressModal.open();
-                    
+
                     await this.plugin.convertTagFormat(files, 'inline', true);
                     progressModal.update(files.length);
-                    
+
                     await this.plugin.convertWikiLinkFormat(files, 'inline', true);
-                    
+
                     progressModal.close();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     new Notice('Finished standardising all properties to Inline Array.');
                 }
             ).open();
@@ -6358,14 +6836,14 @@ class TagManagerModal extends Modal {
                 async () => {
                     const progressModal = new ProgressModal(this.app, files.length * 2);
                     progressModal.open();
-                    
+
                     await this.plugin.convertTagFormat(files, 'list', true);
                     progressModal.update(files.length);
-                    
+
                     await this.plugin.convertWikiLinkFormat(files, 'list', true);
-                    
+
                     progressModal.close();
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                     new Notice('Finished standardising all properties to YAML List.');
                 }
             ).open();
@@ -6389,15 +6867,24 @@ class TagManagerModal extends Modal {
 
         const btnHierarchy = this.createIconButton(actionRow, 'git-branch', 'Tag Nesting');
         setTooltip(btnHierarchy, 'View tag hierarchy tree');
-        btnHierarchy.onclick = () => { this.close(); new TagHierarchyModal(this.app, this.plugin).open(); };
+        btnHierarchy.onclick = () => {
+            this.close();
+            new TagHierarchyModal(this.app, this.plugin).open();
+        };
 
         const btnOrphans = this.createIconButton(actionRow, 'alert-circle', 'Orphans');
         setTooltip(btnOrphans, 'Find orphaned tags');
-        btnOrphans.onclick = () => { this.close(); new OrphanTagsModal(this.app, this.plugin).open(); };
+        btnOrphans.onclick = () => {
+            this.close();
+            new OrphanTagsModal(this.app, this.plugin).open();
+        };
 
         const btnHistory = this.createIconButton(actionRow, 'history', 'History');
         setTooltip(btnHistory, 'View and revert recent changes');
-        btnHistory.onclick = () => { this.close(); new HistoryModal(this.app, this.plugin).open(); };
+        btnHistory.onclick = () => {
+            this.close();
+            new HistoryModal(this.app, this.plugin).open();
+        };
     }
 
     createIconButton(container: HTMLElement, iconName: string, text: string, cls: string = ''): HTMLButtonElement {
@@ -6468,26 +6955,26 @@ class TagManagerModal extends Modal {
         // Fix Two: Inline Case Buttons
         const caseInBtns = caseBox.createDiv({ cls: 'btm-inline-case-btns' });
         const btnUpper = caseInBtns.createEl('button', { text: 'Convert to upper', cls: 'btm-mini-case-btn' });
-        btnUpper.onclick = () => { 
+        btnUpper.onclick = () => {
             new BtmConfirmationModal(
-                this.app, 
+                this.app,
                 'Bulk Convert to UPPERCASE',
                 'Are you sure you want to convert ALL tags in your vault to UPPERCASE? This action will modify multiple files.',
                 async () => {
                     await this.plugin.convertAllToCase('uppercase');
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                 }
             ).open();
         };
         const btnLower = caseInBtns.createEl('button', { text: 'Convert to lower', cls: 'btm-mini-case-btn' });
-        btnLower.onclick = () => { 
+        btnLower.onclick = () => {
             new BtmConfirmationModal(
-                this.app, 
+                this.app,
                 'Bulk Convert to lowercase',
                 'Are you sure you want to convert ALL tags in your vault to lowercase? This action will modify multiple files.',
                 async () => {
                     await this.plugin.convertAllToCase('lowercase');
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                 }
             ).open();
         };
@@ -6498,7 +6985,12 @@ class TagManagerModal extends Modal {
         this.createProgressBar(sepBox, stats.separatorStats.consistency);
         const sepDetails = sepBox.createDiv({ cls: 'btm-metric-details' });
         createStatLink(sepDetails, stats.separatorStats.hyphen.length, 'kebab-case', stats.separatorStats.hyphen);
-        createStatLink(sepDetails, stats.separatorStats.underscore.length, 'snake_case', stats.separatorStats.underscore);
+        createStatLink(
+            sepDetails,
+            stats.separatorStats.underscore.length,
+            'snake_case',
+            stats.separatorStats.underscore
+        );
         createStatLink(sepDetails, stats.separatorStats.both.length, 'mixed', stats.separatorStats.both);
         createStatLink(sepDetails, stats.separatorStats.none.length, 'none', stats.separatorStats.none);
 
@@ -6508,12 +7000,17 @@ class TagManagerModal extends Modal {
         this.createProgressBar(specialBox, stats.specialCharStats.consistency);
         const specialDetails = specialBox.createDiv({ cls: 'btm-metric-details' });
         createStatLink(specialDetails, stats.specialCharStats.clean.length, 'clean tags', stats.specialCharStats.clean);
-        createStatLink(specialDetails, stats.specialCharStats.withSpecial.length, 'with special chars', stats.specialCharStats.withSpecial);
-        
+        createStatLink(
+            specialDetails,
+            stats.specialCharStats.withSpecial.length,
+            'with special chars',
+            stats.specialCharStats.withSpecial
+        );
+
         if (stats.quotedFrontmatterCount > 0) {
-            const fmLink = specialDetails.createEl('a', { 
-                text: `${stats.quotedFrontmatterCount} notes with quoted properties`, 
-                cls: 'btm-stat-link btm-warning-link' 
+            const fmLink = specialDetails.createEl('a', {
+                text: `${stats.quotedFrontmatterCount} notes with quoted properties`,
+                cls: 'btm-stat-link btm-warning-link'
             });
             fmLink.onclick = () => {
                 this.close();
@@ -6525,26 +7022,39 @@ class TagManagerModal extends Modal {
         const formatBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         formatBox.createDiv({ text: 'Tag Format Style', cls: 'btm-metric-label' });
 
-        const formatContent = formatBox.createDiv({ cls: 'btm-metric-details', attr: { style: 'display:block; margin-bottom: 5px;' } });
+        const formatContent = formatBox.createDiv({
+            cls: 'btm-metric-details',
+            attr: { style: 'display:block; margin-bottom: 5px;' }
+        });
 
         const createFormatLink = (label: string, files: TFile[]) => {
             if (files.length > 0) {
-                const link = formatContent.createEl('a', { text: `${label}: ${files.length} files`, cls: 'btm-stat-link', attr: { style: 'display:block;' } });
+                const link = formatContent.createEl('a', {
+                    text: `${label}: ${files.length} files`,
+                    cls: 'btm-stat-link',
+                    attr: { style: 'display:block;' }
+                });
                 link.onclick = () => {
                     this.close();
                     new SimpleFileListModal(this.app, label, files).open();
                 };
             } else {
-                formatContent.createDiv({ text: `${label}: 0 files`, attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
+                formatContent.createDiv({
+                    text: `${label}: 0 files`,
+                    attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' }
+                });
             }
         };
 
         createFormatLink('YAML List', stats.formatStats.yamlList);
         createFormatLink('Inline Array', stats.formatStats.inlineArray);
 
-        const formatActions = formatBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
+        const formatActions = formatBox.createDiv({
+            cls: 'btm-format-actions',
+            attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' }
+        });
 
-        const btnToInline = formatActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
+        const btnToInline = formatActions.createEl('button', { text: 'Convert all to inline', cls: 'btm-small-btn' });
         btnToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -6552,12 +7062,12 @@ class TagManagerModal extends Modal {
                 'Are you sure you want to convert ALL tags in these files to the [tag1, tag2] inline format?',
                 async () => {
                     await this.plugin.convertTagFormat(files, 'inline');
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                 }
             ).open();
         };
 
-        const btnToList = formatActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
+        const btnToList = formatActions.createEl('button', { text: 'Convert all to list', cls: 'btm-small-btn' });
         btnToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -6565,7 +7075,7 @@ class TagManagerModal extends Modal {
                 'Are you sure you want to convert ALL tags in these files to the YAML list format?',
                 async () => {
                     await this.plugin.convertTagFormat(files, 'list');
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                 }
             ).open();
         };
@@ -6580,7 +7090,10 @@ class TagManagerModal extends Modal {
         }
 
         if (stats.nestedFiles.length > 0) {
-            const realNestedLink = nestDetails.createEl('a', { text: `${stats.nestedFiles.length} notes with nested tags`, cls: 'btm-stat-link' });
+            const realNestedLink = nestDetails.createEl('a', {
+                text: `${stats.nestedFiles.length} notes with nested tags`,
+                cls: 'btm-stat-link'
+            });
             realNestedLink.onclick = () => {
                 this.close();
                 new NestedFilesModal(this.app, stats.nestedFiles).open();
@@ -6593,33 +7106,51 @@ class TagManagerModal extends Modal {
         const locBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         locBox.createDiv({ text: 'Locations', cls: 'btm-metric-label' });
         const locDetails = locBox.createDiv({ cls: 'btm-metric-details' });
-        createStatLink(locDetails, stats.locationStats.frontmatter.length, 'frontmatter', stats.locationStats.frontmatter);
+        createStatLink(
+            locDetails,
+            stats.locationStats.frontmatter.length,
+            'frontmatter',
+            stats.locationStats.frontmatter
+        );
         createStatLink(locDetails, stats.locationStats.body.length, 'body', stats.locationStats.body);
 
         // Wiki Link Format Style
         const wikiBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
         wikiBox.createDiv({ text: 'Wiki Link Format Style', cls: 'btm-metric-label' });
 
-        const wikiContent = wikiBox.createDiv({ cls: 'btm-metric-details', attr: { style: 'display:block; margin-bottom: 5px;' } });
+        const wikiContent = wikiBox.createDiv({
+            cls: 'btm-metric-details',
+            attr: { style: 'display:block; margin-bottom: 5px;' }
+        });
 
         const createWikiLinkStats = (label: string, files: TFile[]) => {
             if (files.length > 0) {
-                const link = wikiContent.createEl('a', { text: `${label}: ${files.length} files`, cls: 'btm-stat-link', attr: { style: 'display:block;' } });
+                const link = wikiContent.createEl('a', {
+                    text: `${label}: ${files.length} files`,
+                    cls: 'btm-stat-link',
+                    attr: { style: 'display:block;' }
+                });
                 link.onclick = () => {
                     this.close();
                     new SimpleFileListModal(this.app, label, files).open();
                 };
             } else {
-                wikiContent.createDiv({ text: `${label}: 0 files`, attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' } });
+                wikiContent.createDiv({
+                    text: `${label}: 0 files`,
+                    attr: { style: 'color: var(--text-muted); font-size: var(--font-ui-smaller);' }
+                });
             }
         };
 
         createWikiLinkStats('YAML List', stats.wikiLinkStats.yamlList);
         createWikiLinkStats('Inline Array', stats.wikiLinkStats.inlineArray);
 
-        const wikiActions = wikiBox.createDiv({ cls: 'btm-format-actions', attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' } });
+        const wikiActions = wikiBox.createDiv({
+            cls: 'btm-format-actions',
+            attr: { style: 'margin-top: auto; display: flex; flex-direction: column; gap: 4px;' }
+        });
 
-        const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert All to Inline', cls: 'btm-small-btn' });
+        const btnWikiToInline = wikiActions.createEl('button', { text: 'Convert all to inline', cls: 'btm-small-btn' });
         btnWikiToInline.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -6627,12 +7158,12 @@ class TagManagerModal extends Modal {
                 'Are you sure you want to convert ALL wiki link properties to the ["[[Link]]"] inline format?',
                 async () => {
                     await this.plugin.convertWikiLinkFormat(files, 'inline');
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                 }
             ).open();
         };
 
-        const btnWikiToList = wikiActions.createEl('button', { text: 'Convert All to List', cls: 'btm-small-btn' });
+        const btnWikiToList = wikiActions.createEl('button', { text: 'Convert all to list', cls: 'btm-small-btn' });
         btnWikiToList.onclick = () => {
             new BtmConfirmationModal(
                 this.app,
@@ -6640,7 +7171,7 @@ class TagManagerModal extends Modal {
                 'Are you sure you want to convert ALL wiki link properties to the YAML list format?',
                 async () => {
                     await this.plugin.convertWikiLinkFormat(files, 'list');
-                    this.updateStats().catch(e => console.error("Failed to update stats", e));
+                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
                 }
             ).open();
         };
@@ -6669,18 +7200,26 @@ class TagManagerModal extends Modal {
             const dupBox = this.metricsGrid.createDiv({ cls: 'btm-metric-box' });
             dupBox.createDiv({ text: 'Potential Case Duplicates', cls: 'btm-metric-label' });
             const dupDetails = dupBox.createDiv({ cls: 'btm-metric-details' });
-            
-            const dupLink = dupDetails.createEl('a', { 
-                text: `${stats.caseDuplicates.length} pairs of duplicate tags`, 
-                cls: 'btm-stat-link btm-warning-link' 
+
+            const dupLink = dupDetails.createEl('a', {
+                text: `${stats.caseDuplicates.length} pairs of duplicate tags`,
+                cls: 'btm-stat-link btm-warning-link'
             });
             dupLink.onclick = () => {
                 this.close();
-                const listEl = new TagListModal(this.app, 'Case Duplicates', stats.caseDuplicates.flatMap(d => d.variants));
+                const listEl = new TagListModal(
+                    this.app,
+                    'Case Duplicates',
+                    stats.caseDuplicates.flatMap((d) => d.variants)
+                );
                 listEl.open();
             };
 
-            const mergeAllBtn = dupBox.createEl('button', { text: 'Merge all to canonical', cls: 'btm-small-btn btm-warning-btn', attr: { style: 'margin-top: auto;' } });
+            const mergeAllBtn = dupBox.createEl('button', {
+                text: 'Merge all to canonical',
+                cls: 'btm-small-btn btm-warning-btn',
+                attr: { style: 'margin-top: auto;' }
+            });
             setTooltip(mergeAllBtn, 'Merge all case variants into their most-used versions');
             mergeAllBtn.onclick = () => {
                 new BtmConfirmationModal(
@@ -6691,15 +7230,15 @@ class TagManagerModal extends Modal {
                         this.close();
                         const progressModal = new ProgressModal(this.app, stats.caseDuplicates.length);
                         progressModal.open();
-                        
+
                         let i = 0;
                         for (const { canonical, variants } of stats.caseDuplicates) {
-                            const sources = variants.filter(v => v !== canonical);
+                            const sources = variants.filter((v) => v !== canonical);
                             await this.plugin.mergeTags(sources, canonical);
                             i++;
                             progressModal.update(i);
                         }
-                        
+
                         progressModal.close();
                         new Notice('Finished merging case duplicates.');
                     }
@@ -6708,33 +7247,38 @@ class TagManagerModal extends Modal {
         }
 
         // Async check for invalid tags
-        this.checkInvalidTags().catch(e => console.error("Failed to check invalid tags", e));
-        this.checkEmptyTags().catch(e => console.error("Failed to check empty tags", e));
+        this.checkInvalidTags().catch((e) => console.error('Failed to check invalid tags', e));
+        this.checkEmptyTags().catch((e) => console.error('Failed to check empty tags', e));
     }
 
     async checkInvalidTags() {
         if (!this.invalidContentEl) return;
         this.invalidContentEl.empty();
-        
+
         const invalidFiles = await this.plugin.findInvalidTagFormats();
 
         if (invalidFiles.length > 0) {
             this.invalidBlock.show();
-            
+
             const warningRow = this.invalidContentEl.createDiv({ cls: 'btm-invalid-warning' });
             const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
             setIcon(iconEl, 'alert-triangle');
-            warningRow.createSpan({ text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? 's' : ''} with invalid tags` });
+            warningRow.createSpan({
+                text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? 's' : ''} with invalid tags`
+            });
 
-            const fixBtn = warningRow.createEl('button', { text: 'FIX INVALID', cls: 'mod-warning btm-fix-invalid-btn' });
+            const fixBtn = warningRow.createEl('button', {
+                text: 'Fix invalid',
+                cls: 'mod-warning btm-fix-invalid-btn'
+            });
             fixBtn.onclick = () => {
                 this.close();
                 new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
             };
-            
+
             // Show a few examples
             const list = this.invalidContentEl.createDiv({ cls: 'btm-invalid-mini-list' });
-            invalidFiles.slice(0, 3).forEach(f => {
+            invalidFiles.slice(0, 3).forEach((f) => {
                 list.createDiv({ text: f.path, cls: 'btm-invalid-mini-item' });
             });
             if (invalidFiles.length > 3) {
@@ -6761,9 +7305,6 @@ class TagManagerModal extends Modal {
         }
     }
 
-
-
-
     onClose() {
         this.contentEl.empty();
     }
@@ -6786,7 +7327,11 @@ class TagLowercaseSettingTab extends PluginSettingTab {
 
         const dashboardSection = containerEl.createDiv({ cls: 'btm-settings-section' });
         new Setting(dashboardSection).setName('Dashboard').setHeading();
-        new BulkManagerSettingsDashboard(this.app, this.plugin, dashboardSection.createDiv({ cls: 'btm-dashboard' })).render();
+        new BulkManagerSettingsDashboard(
+            this.app,
+            this.plugin,
+            dashboardSection.createDiv({ cls: 'btm-dashboard' })
+        ).render();
 
         const aliasesSection = containerEl.createDiv({ cls: 'btm-section-box' });
         new Setting(aliasesSection).setName('Aliases').setHeading();
@@ -6796,8 +7341,10 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         this.renderAliases(aliasesContainer);
 
         const protectedSection = containerEl.createDiv({ cls: 'btm-section-box' });
-        new Setting(protectedSection).setName('Protected Tags').setHeading();
-        protectedSection.createEl('p', { text: 'Tags listed here will be ignored by all rename, merge, and delete operations. You can use an asterisk (*) at the end for wildcards (e.g. #status/*).' });
+        new Setting(protectedSection).setName('Protected tags').setHeading();
+        protectedSection.createEl('p', {
+            text: 'Tags listed here will be ignored by all rename, merge, and delete operations. You can use an asterisk (*) at the end for wildcards (e.g. #status/*).'
+        });
 
         const protectedContainer = protectedSection.createDiv({ cls: 'btm-aliases' });
         this.renderProtectedTags(protectedContainer);
@@ -6806,63 +7353,71 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         new Setting(historySection).setName('History').setHeading();
 
         new Setting(historySection)
-            .setName('Max History Size')
+            .setName('Max history size')
             .setDesc('Number of operations to keep in history')
-            .addSlider(slider => slider
-                .setLimits(10, 100, 10)
-                .setValue(this.plugin.settings.maxHistorySize)
-                .setDynamicTooltip()
-                .onChange((value) => {
-                    runAsync(async () => {
-                        this.plugin.settings.maxHistorySize = value;
-                        await this.plugin.saveSettings();
-                    });
-                }));
+            .addSlider((slider) =>
+                slider
+                    .setLimits(10, 100, 10)
+                    .setValue(this.plugin.settings.maxHistorySize)
+                    .setDynamicTooltip()
+                    .onChange((value) => {
+                        runAsync(async () => {
+                            this.plugin.settings.maxHistorySize = value;
+                            await this.plugin.saveSettings();
+                        });
+                    })
+            );
 
         new Setting(historySection)
-            .setName('History Expiration (Days)')
+            .setName('History expiration (days)')
             .setDesc('Automatically delete history older than this many days (0 to disable).')
-            .addSlider(slider => slider
-                .setLimits(0, 30, 1)
-                .setValue(this.plugin.settings.historyExpirationDays)
-                .setDynamicTooltip()
-                .onChange((value) => {
-                    runAsync(async () => {
-                        this.plugin.settings.historyExpirationDays = value;
-                        await this.plugin.saveSettings();
-                    });
-                }));
+            .addSlider((slider) =>
+                slider
+                    .setLimits(0, 30, 1)
+                    .setValue(this.plugin.settings.historyExpirationDays)
+                    .setDynamicTooltip()
+                    .onChange((value) => {
+                        runAsync(async () => {
+                            this.plugin.settings.historyExpirationDays = value;
+                            await this.plugin.saveSettings();
+                        });
+                    })
+            );
 
         new Setting(historySection)
-            .setName('Orphan Threshold')
+            .setName('Orphan threshold')
             .setDesc('Tags used fewer times than this are considered orphaned')
-            .addSlider(slider => slider
-                .setLimits(1, 10, 1)
-                .setValue(this.plugin.settings.orphanThreshold)
-                .setDynamicTooltip()
-                .onChange((value) => {
-                    runAsync(async () => {
-                        this.plugin.settings.orphanThreshold = value;
-                        await this.plugin.saveSettings();
-                    });
-                }));
+            .addSlider((slider) =>
+                slider
+                    .setLimits(1, 10, 1)
+                    .setValue(this.plugin.settings.orphanThreshold)
+                    .setDynamicTooltip()
+                    .onChange((value) => {
+                        runAsync(async () => {
+                            this.plugin.settings.orphanThreshold = value;
+                            await this.plugin.saveSettings();
+                        });
+                    })
+            );
 
         new Setting(historySection)
-            .setName('Clear History')
+            .setName('Clear history')
             .setDesc('Remove all operation history')
-            .addButton(btn => btn
-                .setButtonText('Clear')
-                .setWarning()
-                .onClick(() => {
-                    runAsync(async () => {
-                        for (const op of this.plugin.settings.operationHistory) {
-                            await this.plugin.deleteExternalHistory(op.id);
-                        }
-                        this.plugin.settings.operationHistory = [];
-                        await this.plugin.saveSettings();
-                        new Notice('History cleared.');
-                    });
-                }));
+            .addButton((btn) =>
+                btn
+                    .setButtonText('Clear')
+                    .setWarning()
+                    .onClick(() => {
+                        runAsync(async () => {
+                            for (const op of this.plugin.settings.operationHistory) {
+                                await this.plugin.deleteExternalHistory(op.id);
+                            }
+                            this.plugin.settings.operationHistory = [];
+                            await this.plugin.saveSettings();
+                            new Notice('History cleared.');
+                        });
+                    })
+            );
     }
 
     renderAliases(container: HTMLElement) {
@@ -6870,9 +7425,8 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         const aliases = this.plugin.settings.aliases;
 
         for (const [alias, canonical] of Object.entries(aliases)) {
-            new Setting(container)
-                .setName(`#${alias} → #${canonical}`)
-                .addButton(btn => btn
+            new Setting(container).setName(`#${alias} → #${canonical}`).addButton((btn) =>
+                btn
                     .setIcon('trash')
                     .setWarning()
                     .onClick(() => {
@@ -6881,7 +7435,8 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                             await this.plugin.saveSettings();
                             this.renderAliases(container);
                         });
-                    }));
+                    })
+            );
         }
 
         const addRow = container.createDiv({ cls: 'btm-add-alias' });
@@ -6907,9 +7462,8 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         const protectedTags = this.plugin.settings.protectedTags || [];
 
         protectedTags.forEach((tag, index) => {
-            new Setting(container)
-                .setName(tag)
-                .addButton(btn => btn
+            new Setting(container).setName(tag).addButton((btn) =>
+                btn
                     .setIcon('trash')
                     .setWarning()
                     .onClick(() => {
@@ -6918,25 +7472,26 @@ class TagLowercaseSettingTab extends PluginSettingTab {
                             await this.plugin.saveSettings();
                             this.renderProtectedTags(container);
                         });
-                    }));
+                    })
+            );
         });
 
         const addRow = container.createDiv({ cls: 'btm-add-alias' });
         const tagInput = new TextComponent(addRow).setPlaceholder('#tag/to/protect');
         tagInput.inputEl.addClass('btm-flex-1');
-        
+
         const addBtn = addRow.createEl('button', { text: 'Protect' });
         addBtn.onclick = () => {
             runAsync(async () => {
                 let t = tagInput.getValue().trim();
                 if (t) {
                     if (!t.startsWith('#')) t = '#' + t;
-                    
+
                     // Safety initialization just in case
                     if (!this.plugin.settings.protectedTags) {
                         this.plugin.settings.protectedTags = [];
                     }
-                    
+
                     if (!this.plugin.settings.protectedTags.includes(t)) {
                         this.plugin.settings.protectedTags.push(t);
                         await this.plugin.saveSettings();

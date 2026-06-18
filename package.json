@@ -1,11 +1,16 @@
 {
     "name": "bulk-tag-manager",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "description": "Bulk convert all tags in your vault to lowercase, verify stats, and generate tag lists.",
     "main": "main.js",
     "scripts": {
         "dev": "node esbuild.config.mjs",
-        "build": "node esbuild.config.mjs production"
+        "build": "node esbuild.config.mjs production",
+        "lint": "eslint .",
+        "lint:fix": "eslint . --fix",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "test": "node test/strip-inline-tags.test.mjs"
     },
     "keywords": [],
     "author": "DuckTapeKiller",
@@ -18,9 +23,11 @@
         "@typescript-eslint/parser": "^8.52.0",
         "esbuild": "^0.24.2",
         "eslint": "^9.39.2",
+        "eslint-config-prettier": "^10.1.8",
         "eslint-plugin-obsidianmd": "^0.1.9",
         "globals": "^17.0.0",
         "obsidian": "^1.7.2",
+        "prettier": "^3.8.4",
         "tslib": "^2.4.0",
         "typescript": "^5.9.3",
         "typescript-eslint": "^8.52.0"
