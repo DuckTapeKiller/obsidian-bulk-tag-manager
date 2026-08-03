@@ -14,6 +14,11 @@
 // note, collapsing ALL multi-space runs — flattening YAML, nested lists, and
 // any indented content. The fix removes only the tag and one adjacent space.
 
+// The parser helpers below are imported from the real module rather than mirrored,
+// so they cannot drift. Only the stripInlineTags path is still copied, because it
+// lives on the plugin class and needs the Obsidian runtime to import directly.
+import { fixFrontmatterMapping, isTagListComment, parseCsvRenamePairs, parseTagDeleteList } from '../tag-text.mjs';
+
 // ---- mirrored from main.ts -------------------------------------------------
 
 function getCodeBlockRanges(content) {
@@ -170,6 +175,73 @@ const codeBlock = (s) => s.slice(s.indexOf('```yaml'), s.indexOf('```\n', s.inde
 eq('yaml code block untouched', codeBlock(out), codeBlock(yamlNote));
 eq('inline tag removed from prose', /Some prose with an inline tag\./.test(out), true);
 eq('frontmatter region untouched', out.startsWith('---\ntags: [foo]\n---\n'), true);
+
+// ---- tag list / CSV parsing -------------------------------------------------
+
+const eqJson = (name, actual, expected) => eq(name, JSON.stringify(actual), JSON.stringify(expected));
+
+console.log('comment detection');
+
+eq('hash-space is a comment', isTagListComment('# a note to self'), true);
+eq('double hash is a comment', isTagListComment('##disabled'), true);
+eq('slash-slash is a comment', isTagListComment('// disabled'), true);
+eq('a plain tag is not a comment', isTagListComment('#project/old'), false);
+
+console.log('delete-list parsing');
+
+// The bug: "#" was stripped before the comment test ran, so "# comment" survived as a
+// tag literally named " comment".
+eqJson('hash comments are dropped', parseTagDeleteList('# tags to remove\n#project/old\nstatus/wip'), [
+    'project/old',
+    'status/wip'
+]);
+eqJson('slash comments are dropped', parseTagDeleteList('// disabled\n#keep'), ['keep']);
+eqJson('blank lines are dropped', parseTagDeleteList('\n\n#a\n   \n#b\n'), ['a', 'b']);
+eqJson('a bare hash yields nothing', parseTagDeleteList('#'), []);
+eqJson('crlf input', parseTagDeleteList('#a\r\n#b'), ['a', 'b']);
+
+console.log('csv rename parsing');
+
+// The bug: every line beginning with "#" was discarded as a comment, so a CSV written
+// in Obsidian's own tag syntax silently parsed to zero pairs.
+eqJson('hash-prefixed pairs are kept', parseCsvRenamePairs('#old,#new'), [{ from: 'old', to: 'new' }]);
+eqJson('bare pairs are kept', parseCsvRenamePairs('old,new'), [{ from: 'old', to: 'new' }]);
+eqJson('header row is skipped', parseCsvRenamePairs('old_tag,new_tag\n#a,#b'), [{ from: 'a', to: 'b' }]);
+eqJson('comments are still dropped', parseCsvRenamePairs('# mapping file\n#a,#b'), [{ from: 'a', to: 'b' }]);
+eqJson('incomplete rows are dropped', parseCsvRenamePairs('a,\n,b\nnocomma\n#a,#b'), [{ from: 'a', to: 'b' }]);
+
+console.log('frontmatter mapping repair');
+
+eq(
+    'quotes an unquoted colon value',
+    fixFrontmatterMapping('---\nResumen: algo: importante\n---\nbody'),
+    '---\nResumen: "algo: importante"\n---\nbody'
+);
+// The bug: \w is ASCII-only, so accented keys were never matched.
+eq(
+    'handles non-ascii keys',
+    fixFrontmatterMapping('---\nTítulo: algo: importante\n---\nbody'),
+    '---\nTítulo: "algo: importante"\n---\nbody'
+);
+// The bug: indexOf('---\n') never matched a CRLF document, so it silently no-opped.
+eq(
+    'handles crlf documents',
+    fixFrontmatterMapping('---\r\nResumen: algo: importante\r\n---\r\nbody'),
+    '---\r\nResumen: "algo: importante"\r\n---\r\nbody'
+);
+eq('leaves already-quoted values alone', fixFrontmatterMapping('---\nkey: "a: b"\n---\n'), null);
+eq('leaves valid frontmatter alone', fixFrontmatterMapping('---\ntags: [a, b]\n---\n'), null);
+eq('returns null without frontmatter', fixFrontmatterMapping('no frontmatter: here at all\n'), null);
+eq(
+    'body containing --- is preserved',
+    fixFrontmatterMapping('---\nResumen: algo: importante\n---\n\ntext\n\n---\n\nmore text\n'),
+    '---\nResumen: "algo: importante"\n---\n\ntext\n\n---\n\nmore text\n'
+);
+eq(
+    'escapes embedded double quotes',
+    fixFrontmatterMapping('---\nk: say "hi": now\n---\n'),
+    '---\nk: "say \\"hi\\": now"\n---\n'
+);
 
 // ---- summary ---------------------------------------------------------------
 

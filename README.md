@@ -226,12 +226,15 @@ Find tags used fewer times than a configurable threshold (default: 2 files). The
 
 Generate a markdown file (`All Tags.md`) in your vault root listing every tag and its usage count, sorted alphabetically.
 
+If `All Tags.md` already exists, you are asked to confirm before it is replaced, and its previous contents are written to undo history first.
+
 #### $\color{orange}{\text{History and Undo}}$
 
 Every destructive operation (rename, merge, delete, convert, pattern rename, format conversion, property cleaning) is recorded with full file snapshots.
 
 - Click **History** to view a chronological log of all operations.
 - Click **Undo** on any operation to revert every affected file to its exact state before the operation.
+- Notes you have edited since the operation ran are left untouched, so an undo cannot discard newer work. Any skipped notes are listed after the undo completes, and can be corrected by hand.
 - History is stored externally in the plugin's data directory to keep `data.json` small.
 - Configure **Max History Size** (default: 50 entries) and **History Expiration** (default: 7 days) in Settings.
 

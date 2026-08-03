@@ -17,6 +17,7 @@ import {
     setIcon,
     setTooltip
 } from 'obsidian';
+import { fixFrontmatterMapping, parseCsvRenamePairs, parseTagDeleteList } from './tag-text.mjs';
 
 // --- Interfaces ---
 
@@ -202,6 +203,24 @@ type DragManager = {
     setAction?: (action: string) => void;
 };
 
+// getTags() and getCachedFiles() exist at runtime but are absent from Obsidian's public
+// typings. Reaching them through narrow accessors keeps the reliance on undocumented API
+// declared in one place, and degrades to an empty result if either is ever withdrawn.
+type InternalMetadataCache = {
+    getTags?: () => Record<string, number>;
+    getCachedFiles?: () => string[];
+};
+
+function getVaultTags(app: App): Record<string, number> {
+    const cache = app.metadataCache as typeof app.metadataCache & InternalMetadataCache;
+    return cache.getTags?.() ?? {};
+}
+
+function getCachedFilePaths(app: App): string[] {
+    const cache = app.metadataCache as typeof app.metadataCache & InternalMetadataCache;
+    return cache.getCachedFiles?.() ?? [];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -267,41 +286,6 @@ function menuForEvent(event: MouseEvent): Menu {
     return menu;
 }
 
-function parseCsvRenamePairs(csvText: string): { from: string; to: string }[] {
-    const lines = csvText
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#'));
-
-    const pairs: { from: string; to: string }[] = [];
-
-    for (const line of lines) {
-        const commaIdx = line.indexOf(',');
-        if (commaIdx === -1) continue;
-
-        const from = line.substring(0, commaIdx).trim().replace(/^#/, '');
-        const to = line
-            .substring(commaIdx + 1)
-            .trim()
-            .replace(/^#/, '');
-
-        // Skip header row
-        if (from === 'old_tag' && to === 'new_tag') continue;
-        if (!from || !to) continue;
-
-        pairs.push({ from, to });
-    }
-
-    return pairs;
-}
-
-function parseTagDeleteList(text: string): string[] {
-    return text
-        .split(/\r?\n/)
-        .map((l) => l.trim().replace(/^#/, ''))
-        .filter((l) => l && !l.startsWith('#') && !l.startsWith('//'));
-}
-
 class InlineTagSuggest {
     private suggestEl: HTMLElement;
     private isOpen = false;
@@ -342,7 +326,7 @@ class InlineTagSuggest {
             return;
         }
 
-        const allTags = Object.keys(this.app.metadataCache.getTags() ?? {}).map((t) => t.replace(/^#/, ''));
+        const allTags = Object.keys(getVaultTags(this.app)).map((t) => t.replace(/^#/, ''));
         const matches = allTags.filter((t) => t.toLowerCase().includes(query)).slice(0, 8);
 
         if (matches.length > 0) {
@@ -697,7 +681,7 @@ export default class TagLowercasePlugin extends Plugin {
             this.pageAliases.clear();
             this.tagPages.clear();
 
-            for (const path of this.app.metadataCache.getCachedFiles()) {
+            for (const path of getCachedFilePaths(this.app)) {
                 const file = this.app.vault.getAbstractFileByPath(path);
                 if (file instanceof TFile) {
                     this.updateTagPage(file, this.app.metadataCache.getCache(path)?.frontmatter);
@@ -1038,7 +1022,7 @@ export default class TagLowercasePlugin extends Plugin {
             fullRecord.changes = []; // Clear paths from data.json
         } catch (e) {
             console.error('Failed to save external history snapshots:', e);
-            new Notice('Warning: Failed to save history snapshots. This operation may not be reversible.');
+            new Notice('Warning: failed to save history snapshots. This operation may not be reversible.');
             fullRecord.nonRevertible = true;
         }
 
@@ -1127,7 +1111,7 @@ export default class TagLowercasePlugin extends Plugin {
                 if (await this.app.vault.adapter.exists(manifestPath)) {
                     fileChanges = JSON.parse(await this.app.vault.adapter.read(manifestPath));
                 } else {
-                    new Notice('Critical error: History manifest missing.');
+                    new Notice('Critical error: history manifest missing.');
                     return;
                 }
             } catch (e) {
@@ -1138,6 +1122,7 @@ export default class TagLowercasePlugin extends Plugin {
         }
 
         this.isBulkOperationInProgress = true;
+        const skipped: { path: string; message: string }[] = [];
         for (let i = 0; i < fileChanges.length; i++) {
             const change = fileChanges[i];
             const file = this.app.vault.getAbstractFileByPath(change.path);
@@ -1159,7 +1144,26 @@ export default class TagLowercasePlugin extends Plugin {
                     }
 
                     if (beforeContent && beforeContent !== '(Snapshot omitted due to size)') {
-                        await this.app.vault.modify(file, beforeContent);
+                        // The ".after" snapshot is what this plugin left on disk. If the file
+                        // no longer matches it, someone has edited the note since, and a blind
+                        // revert would silently discard that newer work.
+                        if (lastOp.useExternalStorage) {
+                            const afterPath = `${historyDir}/${i}.after`;
+                            if (await this.app.vault.adapter.exists(afterPath)) {
+                                const expected = await this.app.vault.adapter.read(afterPath);
+                                const current = await this.app.vault.read(file);
+                                if (current !== expected) {
+                                    skipped.push({
+                                        path: change.path,
+                                        message:
+                                            'Edited since the operation ran. Left untouched so the newer changes are not lost.'
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+
+                        await this.app.vault.process(file, () => beforeContent);
                         revertedCount++;
                     }
                 } catch (e) {
@@ -1177,13 +1181,18 @@ export default class TagLowercasePlugin extends Plugin {
         this.settings.operationHistory.shift();
         await this.saveSettings();
 
-        new Notice(`Reverted ${revertedCount} files.`);
+        if (skipped.length > 0) {
+            new Notice(`Reverted ${revertedCount} files, skipped ${skipped.length}.`);
+            new BtmErrorReportModal(this.app, this, 'Skipped during undo', skipped).open();
+        } else {
+            new Notice(`Reverted ${revertedCount} files.`);
+        }
     }
 
     async standardiseProperties() {
         const files = this.getFilteredFiles();
         if (files.length === 0) {
-            new Notice('No markdown files found in current scope.');
+            new Notice('No Markdown files found in current scope.');
             return;
         }
 
@@ -1264,50 +1273,29 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async fixInvalidMappingError(file: TFile): Promise<void> {
-        // 1. Read raw text from disk (bypasses parser)
-        const before = await this.app.vault.read(file);
-        const fmMatch = before.match(/^---\n([\s\S]*?)\n---/);
+        // process() always writes, so check first whether there is anything to repair.
+        // Without this, a note needing no fix would still be rewritten, bumping its mtime
+        // and firing a modify event for no reason.
+        if (fixFrontmatterMapping(await this.app.vault.read(file)) === null) return;
 
-        if (!fmMatch) return;
+        // The actual rewrite happens inside process() so it is applied to the current
+        // contents rather than to a copy that may have gone stale since that read.
+        let before = '';
+        let after: string | null = null;
 
-        const originalFm = fmMatch[1];
-        const lines = originalFm.split('\n');
-        let isModified = false;
-
-        const fixedLines = lines.map((line) => {
-            // Regex targets lines like: Key: Text with a: inside
-            // Group 1: The Key (e.g., "Resumen")
-            // Group 2: The invalid unquoted value (contains : )
-            // Negative lookahead ensures we do not touch already quoted or complex lines.
-            const match = line.match(/^([\w\s_-]+):\s*(?!["'[{>|])(.*:\s.*)$/);
-
-            if (match) {
-                const key = match[1];
-                let value = match[2];
-
-                // Escape any existing double quotes inside the string
-                value = value.replace(/"/g, '\\"');
-
-                isModified = true;
-                return `${key}: "${value}"`;
-            }
-
-            return line;
+        await this.app.vault.process(file, (data) => {
+            before = data;
+            after = fixFrontmatterMapping(data);
+            return after ?? data;
         });
 
-        if (isModified) {
-            const newFm = fixedLines.join('\n');
-            const fmStartIdx = before.indexOf('---\n') + 4;
-            const fmEndIdx = before.indexOf('\n---', fmStartIdx);
-            if (before.indexOf('---\n') === -1 || fmEndIdx === -1) return; // safety check
-            const newContent = before.substring(0, fmStartIdx) + newFm + before.substring(fmEndIdx);
-            await this.app.vault.modify(file, newContent);
-            await this.addToHistory({
-                type: 'fix-invalid-mapping',
-                description: `Fix invalid frontmatter mapping (${file.path})`,
-                changes: [{ path: file.path, before, after: newContent }]
-            });
-        }
+        if (after === null) return;
+
+        await this.addToHistory({
+            type: 'fix-invalid-mapping',
+            description: `Fix invalid frontmatter mapping (${file.path})`,
+            changes: [{ path: file.path, before, after }]
+        });
     }
 
     // --- Preview System ---
@@ -1483,7 +1471,7 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     async generateTagList() {
-        const tags = this.app.metadataCache.getTags();
+        const tags = getVaultTags(this.app);
         if (!tags || Object.keys(tags).length === 0) {
             new Notice('No tags found in vault.');
             return;
@@ -1491,17 +1479,55 @@ export default class TagLowercasePlugin extends Plugin {
 
         const sortedTags = Object.keys(tags).sort((a, b) => a.localeCompare(b));
 
-        const fileContent = `# All Tags\n\n${sortedTags.join('\n')}\n`;
+        const fileContent = `# All Tags\n\n${sortedTags.map((t) => `${t} (${tags[t]})`).join('\n')}\n`;
         const fileName = 'All Tags.md'; // Could be made configurable in settings later
 
+        const existingFile = this.app.vault.getAbstractFileByPath(fileName);
+
+        // Overwriting a note the user may have written themselves is destructive, so
+        // confirm first and snapshot the old contents into history.
+        if (existingFile instanceof TFile) {
+            const before = await this.app.vault.read(existingFile);
+            if (before === fileContent) {
+                new Notice('Tag list is already up to date.');
+                return;
+            }
+
+            new BtmConfirmationModal(
+                this.app,
+                'Overwrite tag list?',
+                `"${fileName}" already exists. Its current contents will be replaced, and saved to undo history first.`,
+                () => this.writeTagList(existingFile, fileName, fileContent, sortedTags.length, before)
+            ).open();
+            return;
+        }
+
+        await this.writeTagList(null, fileName, fileContent, sortedTags.length, null);
+    }
+
+    private async writeTagList(
+        existingFile: TFile | null,
+        fileName: string,
+        fileContent: string,
+        tagCount: number,
+        before: string | null
+    ) {
         try {
-            const existingFile = this.app.vault.getAbstractFileByPath(fileName);
-            if (existingFile instanceof TFile) {
-                await this.app.vault.modify(existingFile, fileContent);
+            if (existingFile) {
+                await this.app.vault.process(existingFile, () => fileContent);
             } else {
                 await this.app.vault.create(fileName, fileContent);
             }
-            new Notice(`Created "${fileName}" with ${sortedTags.length} tags.`);
+
+            if (before !== null) {
+                await this.addToHistory({
+                    type: 'generate-tag-list',
+                    description: `Overwrite tag list (${fileName})`,
+                    changes: [{ path: fileName, before, after: fileContent }]
+                });
+            }
+
+            new Notice(`Created "${fileName}" with ${tagCount} tags.`);
         } catch (e) {
             console.error('Failed to create tag list:', e);
             new Notice('Failed to create tag list file.');
@@ -1981,7 +2007,7 @@ export default class TagLowercasePlugin extends Plugin {
             });
             new Notice(`Merged ${sourcesClean.length} tags into #${targetClean}. ${changes.length} files changed.`);
         } else {
-            new Notice(`No files were modified. (Tags might not exist in the current scope)`);
+            new Notice(`No files were modified. Tags might not exist in the current scope.`);
         }
     }
 
@@ -2212,7 +2238,7 @@ export default class TagLowercasePlugin extends Plugin {
             });
             new Notice(`Nested ${toNest.length} tags under #${parentClean}. ${changes.length} files changed.`);
         } else {
-            new Notice(`No files were modified. (Tags might not exist in the current scope)`);
+            new Notice(`No files were modified. Tags might not exist in the current scope.`);
         }
     }
 
@@ -2651,7 +2677,7 @@ export default class TagLowercasePlugin extends Plugin {
     // --- Tag Analysis ---
 
     getTagHierarchy(): TagNode[] {
-        const tags = this.app.metadataCache.getTags();
+        const tags = getVaultTags(this.app);
         const root: TagNode[] = [];
 
         for (const tag of Object.keys(tags)) {
@@ -2694,7 +2720,7 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     findOrphanedTags(): { tag: string; count: number }[] {
-        const tags = this.app.metadataCache.getTags();
+        const tags = getVaultTags(this.app);
         return Object.keys(tags)
             .map((tag) => ({ tag, count: tags[tag] }))
             .filter(({ count }) => count < this.settings.orphanThreshold)
@@ -2995,7 +3021,7 @@ export default class TagLowercasePlugin extends Plugin {
             totalTags > 0 ? Math.round((stats.specialCharStats.clean.length / totalTags) * 100) : 100;
 
         // --- 3. Duplicate Detection across case variants ---
-        const globalTags = this.app.metadataCache.getTags();
+        const globalTags = getVaultTags(this.app);
         const caseGroups = new Map<string, string[]>();
 
         tags.forEach((tag) => {
@@ -3638,7 +3664,7 @@ export default class TagLowercasePlugin extends Plugin {
     }
 
     getAllTags(): string[] {
-        const tags = this.app.metadataCache.getTags();
+        const tags = getVaultTags(this.app);
         return Object.keys(tags)
             .map((t) => t.substring(1))
             .sort();
@@ -3713,7 +3739,7 @@ class PreviewModal extends Modal {
 
         contentEl.createEl('p', {
             cls: 'btm-preview-warning',
-            text: 'Note: Detailed line diffs for frontmatter tags are not shown, but they will be standardized.'
+            text: 'Note: detailed line diffs for frontmatter tags are not shown, but they will be standardized.'
         });
 
         const listEl = contentEl.createDiv({ cls: 'btm-preview-list' });
@@ -4449,7 +4475,7 @@ class TagListModal extends Modal {
                 if (search?.openGlobalSearch) {
                     search.openGlobalSearch(`tag:${tagText}`);
                 } else {
-                    new Notice('Global Search plugin not enabled');
+                    new Notice('Global search plugin not enabled');
                 }
             };
         }
@@ -4648,7 +4674,7 @@ class TagSuggest extends SuggestModal<string> {
         super(app);
         this.plugin = plugin;
         this.onSelect = onSelect;
-        this.tagCounts = this.plugin.app.metadataCache.getTags() ?? {};
+        this.tagCounts = getVaultTags(this.plugin.app);
     }
 
     getSuggestions(query: string): string[] {
@@ -4681,7 +4707,7 @@ class MultiTagSelectModal extends Modal {
         super(app);
         this.plugin = plugin;
         this.onConfirm = onConfirm;
-        this.tagCounts = this.plugin.app.metadataCache.getTags() ?? {};
+        this.tagCounts = getVaultTags(this.plugin.app);
     }
 
     onOpen() {
@@ -6228,7 +6254,7 @@ class TagManagerModal extends Modal {
         this.mergeTargetInput.inputEl.addEventListener('input', () => {
             const target = this.mergeTargetInput.getValue().trim();
             const cleanTarget = target.replace(/^#/, '');
-            const globalTags = this.plugin.app.metadataCache.getTags() ?? {};
+            const globalTags = getVaultTags(this.plugin.app);
             if (globalTags['#' + cleanTarget] !== undefined) {
                 mergeWarning.textContent = `⚠️ #${cleanTarget} already exists. This will merge into the existing tag.`;
                 mergeWarning.show();
@@ -6820,7 +6846,7 @@ class TagManagerModal extends Modal {
 
                     progressModal.close();
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                    new Notice('Finished standardising all properties to Inline Array.');
+                    new Notice('Finished standardising all properties to inline array.');
                 }
             ).open();
         };
@@ -6844,7 +6870,7 @@ class TagManagerModal extends Modal {
 
                     progressModal.close();
                     this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                    new Notice('Finished standardising all properties to YAML List.');
+                    new Notice('Finished standardising all properties to YAML list.');
                 }
             ).open();
         };

@@ -8,6 +8,7 @@
         "build": "node esbuild.config.mjs production",
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
+        "typecheck": "tsc --noEmit --skipLibCheck",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "node test/strip-inline-tags.test.mjs"
