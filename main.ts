@@ -3140,7 +3140,7 @@ export default class TagLowercasePlugin extends Plugin {
                         if (fileHasWikiInline) stats.wikiLinkStats.inlineArray.push(file);
                     }
                 }
-            } catch (e) {
+            } catch {
                 /* Ignore read errors */
             }
         }
@@ -3712,9 +3712,21 @@ export default class TagLowercasePlugin extends Plugin {
 
     async applyAliases(file: TFile) {
         const aliases = this.settings.aliases;
-        if (Object.keys(aliases).length === 0) return;
+        const aliasKeys = Object.keys(aliases);
+        if (aliasKeys.length === 0) return;
 
-        let modified = false;
+        // This runs from the vault "modify" handler, so it fires for every note the user
+        // edits while any alias is configured. Without this guard it rewrote each of those
+        // notes unconditionally, and since alias corrections are deliberately not recorded
+        // in history, the resulting frontmatter churn could not be undone.
+        const escapeAlias = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const aliasProbe = new RegExp(
+            `(^|\\s)(#)(?:${aliasKeys.map(escapeAlias).join('|')})(?=[\\s/]|$|[^\\p{L}\\p{N}_-])`,
+            'gu'
+        );
+        if (!this.fileMayContainTags(file, await this.app.vault.cachedRead(file), aliasKeys, aliasProbe)) {
+            return;
+        }
 
         await this.app.fileManager.processFrontMatter(file, (fm) => {
             const processSingleTag = (t: string): string => {
@@ -3724,13 +3736,11 @@ export default class TagLowercasePlugin extends Plugin {
                 if (this.isTagProtected(raw)) return t;
                 // Exact match
                 if (aliases[raw]) {
-                    modified = true;
                     return hasHash ? '#' + aliases[raw] : aliases[raw];
                 }
                 // B04: Child tag match — if raw starts with aliasKey/, preserve suffix
                 for (const [aliasKey, aliasValue] of Object.entries(aliases)) {
                     if (raw.startsWith(aliasKey + '/')) {
-                        modified = true;
                         const newRaw = aliasValue + raw.substring(aliasKey.length);
                         return hasHash ? '#' + newRaw : newRaw;
                     }
@@ -3770,7 +3780,6 @@ export default class TagLowercasePlugin extends Plugin {
                     if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
                     if (this.isTagProtected(captured)) return m;
 
-                    modified = true;
                     return prefix + hash + canonical;
                 });
             }

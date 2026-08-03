@@ -11,7 +11,8 @@
         "typecheck": "tsc --noEmit --skipLibCheck",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test": "node test/strip-inline-tags.test.mjs"
+        "test": "node test/strip-inline-tags.test.mjs",
+        "lint:strict": "eslint --config eslint.strict.mjs ."
     },
     "keywords": [],
     "author": "DuckTapeKiller",
