@@ -114,6 +114,23 @@ interface TagStandardizationStats {
     caseDuplicates: { canonical: string; variants: string[] }[];
 }
 
+/**
+ * A frontmatter value whose YAML type does not match the type Obsidian expects for that
+ * property -- the state Obsidian flags in the editor as "Type mismatch, expected Number".
+ *
+ * The value is quoted, so YAML reads it as text: `Puntuación: "10.5"` under a Number
+ * property. The note still parses, which is why these accumulate unnoticed.
+ */
+interface PropertyIssue {
+    path: string;
+    file: TFile;
+    property: string;
+    expectedType: string;
+    lineIndex: number;
+    currentValue: string; // as written, including quotes
+    fixedValue: string; // what it becomes once unquoted
+}
+
 interface InvalidTagFile {
     path: string;
     file: TFile;
@@ -241,6 +258,41 @@ async function sha256Hex(text: string): Promise<string | null> {
             .join('');
     } catch {
         return null;
+    }
+}
+
+// Obsidian tracks the type of every property it has seen -- both the ones you assigned by
+// hand and the ones it inferred -- on an undocumented manager. This is the same source the
+// editor uses to decide whether to show a type mismatch warning.
+type MetadataTypeManager = {
+    properties?: Record<string, { name?: string; type?: string }>;
+};
+
+function getPropertyTypes(app: App): Record<string, string> {
+    const manager = (app as App & { metadataTypeManager?: MetadataTypeManager }).metadataTypeManager;
+    const properties = manager?.properties;
+    if (!properties) return {};
+
+    const types: Record<string, string> = {};
+    for (const [key, info] of Object.entries(properties)) {
+        if (info && typeof info.type === 'string') types[key.toLowerCase()] = info.type;
+    }
+    return types;
+}
+
+/** Does this bare text read back as the given Obsidian property type? */
+function bareTextMatchesType(text: string, type: string): boolean {
+    switch (type) {
+        case 'number':
+            return /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(text) && Number.isFinite(Number(text));
+        case 'checkbox':
+            return text === 'true' || text === 'false';
+        case 'date':
+            return /^\d{4}-\d{2}-\d{2}$/.test(text) && !Number.isNaN(Date.parse(text));
+        case 'datetime':
+            return /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?/.test(text) && !Number.isNaN(Date.parse(text));
+        default:
+            return false;
     }
 }
 
@@ -1408,87 +1460,150 @@ export default class TagLowercasePlugin extends Plugin {
         }
     }
 
-    async standardiseProperties() {
-        const files = this.getFilteredFiles();
-        if (files.length === 0) {
-            new Notice('No Markdown files found in current scope.');
-            return;
+    /**
+     * Work out the expected type of each property.
+     *
+     * Obsidian's own type manager is authoritative when available. Failing that, infer from
+     * the vault: if most of a property's values are written bare as numbers, dates or
+     * booleans, that is what the property is, and the quoted stragglers are the mismatches.
+     */
+    private async resolvePropertyTypes(files: TFile[]): Promise<Record<string, string>> {
+        const declared = getPropertyTypes(this.app);
+        if (Object.keys(declared).length > 0) return declared;
+
+        const tally: Record<string, Record<string, number>> = {};
+        for (const file of files) {
+            const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+            if (!frontmatter) continue;
+            for (const [key, value] of Object.entries(frontmatter)) {
+                if (value === null || value === undefined || Array.isArray(value)) continue;
+                let kind = 'text';
+                if (typeof value === 'number') kind = 'number';
+                else if (typeof value === 'boolean') kind = 'checkbox';
+                else if (value instanceof Date) kind = 'date';
+                const name = key.toLowerCase();
+                tally[name] ??= {};
+                tally[name][kind] = (tally[name][kind] ?? 0) + 1;
+            }
         }
 
-        new BtmConfirmationModal(
-            this.app,
-            'Clean Frontmatter Formatting',
-            `Are you sure you want to standardise properties across ${files.length} files? This will remove unnecessary quotes and trim whitespace from all fields.`,
-            async () => {
-                const progressModal = new ProgressModal(this.app, files.length);
-                progressModal.open();
+        const inferred: Record<string, string> = {};
+        for (const [name, kinds] of Object.entries(tally)) {
+            const total = Object.values(kinds).reduce((a, b) => a + b, 0);
+            for (const kind of ['number', 'checkbox', 'date', 'datetime']) {
+                if ((kinds[kind] ?? 0) > total / 2) inferred[name] = kind;
+            }
+        }
+        return inferred;
+    }
+
+    /**
+     * Find frontmatter values that are quoted text where a non-text type is expected.
+     */
+    async findInvalidProperties(): Promise<PropertyIssue[]> {
+        const files = this.getFilteredFiles();
+        const types = await this.resolvePropertyTypes(files);
+        if (Object.keys(types).length === 0) return [];
+
+        const issues: PropertyIssue[] = [];
+        for (const file of files) {
+            let content: string;
+            try {
+                content = await this.app.vault.cachedRead(file);
+            } catch {
+                continue;
+            }
+
+            const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+            if (!match) continue;
+
+            const bodyLines = match[1].split(/\r?\n/);
+            for (let i = 0; i < bodyLines.length; i++) {
+                // Top-level scalar entries only: "Key: value" with no indentation.
+                const entry = bodyLines[i].match(/^([^\s:][^:]*):[ \t]+(.+?)[ \t]*$/);
+                if (!entry) continue;
+
+                const property = entry[1].trim();
+                const written = entry[2];
+                const quoted = written.match(/^"([^"]*)"$|^'([^']*)'$/);
+                if (!quoted) continue;
+
+                const inner = quoted[1] ?? quoted[2] ?? '';
+                const expected = types[property.toLowerCase()];
+                if (!expected || !bareTextMatchesType(inner, expected)) continue;
+
+                issues.push({
+                    path: file.path,
+                    file,
+                    property,
+                    expectedType: expected,
+                    lineIndex: i + 1, // +1 for the opening "---"
+                    currentValue: written,
+                    fixedValue: inner
+                });
+            }
+        }
+        return issues;
+    }
+
+    /**
+     * Remove the quotes around the offending values.
+     *
+     * This edits the specific lines rather than going through processFrontMatter, because a
+     * frontmatter round-trip would reformat the rest of the note's properties as a side
+     * effect -- the exact behaviour this plugin now takes care to avoid.
+     */
+    async fixPropertyIssues(issues: PropertyIssue[]): Promise<number> {
+        if (issues.length === 0) return 0;
+
+        const byFile = new Map<string, PropertyIssue[]>();
+        for (const issue of issues) {
+            const list = byFile.get(issue.path) ?? [];
+            list.push(issue);
+            byFile.set(issue.path, list);
+        }
+
+        const changes: FileChange[] = [];
+        this.isBulkOperationInProgress = true;
+        try {
+            for (const [path, fileIssues] of byFile) {
+                const file = this.app.vault.getAbstractFileByPath(path);
+                if (!(file instanceof TFile)) continue;
+
                 try {
-                    this.isBulkOperationInProgress = true;
-                    let attemptCount = 0;
-                    const changes: FileChange[] = [];
-                    const errors: { path: string; message: string }[] = [];
-
-                    for (const file of files) {
-                        attemptCount++;
-                        try {
-                            const before = await this.app.vault.read(file);
-                            await this.app.fileManager.processFrontMatter(file, (fm) => {
-                                if (!isRecord(fm)) return;
-
-                                const processValue = (val: unknown): unknown => {
-                                    if (typeof val === 'string') return val.trim();
-                                    if (Array.isArray(val)) return val.map((v) => processValue(v));
-
-                                    // Recursive walk for nested objects, excluding Dates
-                                    if (isRecord(val) && !(val instanceof Date)) {
-                                        for (const k in val) val[k] = processValue(val[k]);
-                                    }
-                                    return val;
-                                };
-
-                                for (const key of Object.keys(fm)) {
-                                    fm[key] = processValue(fm[key]);
-                                }
-                            });
-                            const after = await this.app.vault.read(file);
-                            if (before !== after) {
-                                changes.push({ path: file.path, before, after });
-                            }
-                        } catch (e) {
-                            const errorMsg = e instanceof Error ? e.message : String(e);
-                            console.error(`Standardise failed for ${file.path}:`, errorMsg);
-                            errors.push({ path: file.path, message: errorMsg });
+                    let before = '';
+                    let after = '';
+                    await this.app.vault.process(file, (data) => {
+                        before = data;
+                        const lines = data.split('\n');
+                        for (const issue of fileIssues) {
+                            const line = lines[issue.lineIndex];
+                            if (line === undefined) continue;
+                            // Only rewrite when the line still looks exactly as scanned.
+                            const expectedLine = `${issue.property}:`;
+                            if (!line.startsWith(expectedLine) || !line.includes(issue.currentValue)) continue;
+                            lines[issue.lineIndex] = line.replace(issue.currentValue, issue.fixedValue);
                         }
-
-                        // Throttle: Yield to event loop every 50 files based on attempts
-                        if (attemptCount % 50 === 0) {
-                            progressModal.update(attemptCount);
-                            await new Promise((resolve) => window.setTimeout(resolve, 5));
-                        } else {
-                            progressModal.update(attemptCount);
-                        }
-                    }
-
-                    if (changes.length > 0) {
-                        await this.addToHistory({
-                            type: 'standardise-properties',
-                            description: `Clean frontmatter formatting (${changes.length} files)`,
-                            changes
-                        });
-                    }
-                    new Notice(
-                        `Finished: ${changes.length} files changed. ${errors.length > 0 ? `(${errors.length} skipped due to errors)` : ''}`
-                    );
-
-                    if (errors.length > 0) {
-                        new BtmErrorReportModal(this.app, this, 'Standardise Errors', errors).open();
-                    }
-                } finally {
-                    this.isBulkOperationInProgress = false;
-                    progressModal.close();
+                        after = lines.join('\n');
+                        return after;
+                    });
+                    if (before !== after) changes.push({ path, before, after });
+                } catch (e) {
+                    console.error(`Failed to fix properties in ${path}:`, e);
                 }
             }
-        ).open();
+        } finally {
+            this.isBulkOperationInProgress = false;
+        }
+
+        if (changes.length > 0) {
+            await this.addToHistory({
+                type: 'fix-property-types',
+                description: `Fix property types (${changes.length} files)`,
+                changes
+            });
+        }
+        return changes.length;
     }
 
     async fixInvalidMappingError(file: TFile): Promise<void> {
@@ -4399,6 +4514,123 @@ class TagHierarchyModal extends Modal {
     }
 }
 
+// Invalid Properties Modal
+class InvalidPropertiesModal extends Modal {
+    private plugin: TagLowercasePlugin;
+    private issues: PropertyIssue[];
+    private onDone: () => void;
+
+    constructor(app: App, plugin: TagLowercasePlugin, issues: PropertyIssue[], onDone: () => void) {
+        super(app);
+        this.plugin = plugin;
+        this.issues = issues;
+        this.onDone = onDone;
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('btm-invalid-modal');
+        this.modalEl.addClass('btm-modal-wide');
+
+        const byProperty = new Map<string, PropertyIssue[]>();
+        for (const issue of this.issues) {
+            const list = byProperty.get(issue.property) ?? [];
+            list.push(issue);
+            byProperty.set(issue.property, list);
+        }
+
+        new Setting(contentEl)
+            .setName('Properties with a type mismatch')
+            .setDesc(
+                `${this.issues.length} value${this.issues.length === 1 ? '' : 's'} across ` +
+                    `${new Set(this.issues.map((i) => i.path)).size} notes are quoted, so Obsidian reads them ` +
+                    'as text. Removing the quotes restores the expected type.'
+            )
+            .setHeading();
+
+        const listEl = contentEl.createDiv({ cls: 'btm-file-list' });
+
+        for (const [property, group] of byProperty) {
+            const groupEl = listEl.createDiv({ cls: 'btm-file-item' });
+            groupEl.createDiv({
+                cls: 'btm-file-error-text',
+                text: `${property} — expected ${group[0].expectedType}, ${group.length} note${group.length === 1 ? '' : 's'} store it as text`
+            });
+
+            const sample = group[0];
+            groupEl.createDiv({
+                cls: 'btm-invalid-mini-item',
+                text: `${sample.property}: ${sample.currentValue}   →   ${sample.property}: ${sample.fixedValue}`
+            });
+
+            const actions = groupEl.createDiv({ cls: 'btm-button-row btm-button-row-start' });
+
+            const fixGroupBtn = actions.createEl('button', {
+                text: `Fix these ${group.length}`,
+                cls: 'mod-cta btm-small-btn'
+            });
+            fixGroupBtn.onclick = () => {
+                runAsync(async () => {
+                    const n = await this.plugin.fixPropertyIssues(group);
+                    new Notice(`Fixed ${property} in ${n} notes.`);
+                    groupEl.remove();
+                    this.onDone();
+                    if (!listEl.hasChildNodes()) this.close();
+                });
+            };
+
+            const listBtn = actions.createEl('button', { text: 'Show notes', cls: 'btm-small-btn' });
+            listBtn.onclick = () => {
+                const detail = groupEl.createDiv({ cls: 'btm-invalid-mini-list' });
+                listBtn.remove();
+                for (const issue of group) {
+                    const row = detail.createDiv({ cls: 'btm-file-item' });
+                    const link = row.createEl('a', { text: issue.path, cls: 'btm-file-link' });
+                    link.onclick = () => {
+                        this.close();
+                        void this.app.workspace.openLinkText(issue.path, '', false);
+                    };
+                    row.createSpan({ text: `  ${issue.property}: ${issue.currentValue}` });
+                    const fixOne = row.createEl('button', { text: 'Fix', cls: 'btm-small-btn' });
+                    fixOne.onclick = () => {
+                        runAsync(async () => {
+                            await this.plugin.fixPropertyIssues([issue]);
+                            row.remove();
+                            new Notice('Property fixed.');
+                            this.onDone();
+                        });
+                    };
+                }
+            };
+        }
+
+        const footer = contentEl.createDiv({ cls: 'btm-button-row-centered' });
+        const fixAll = footer.createEl('button', {
+            text: `Fix all ${this.issues.length}`,
+            cls: 'mod-cta btm-conf-btn'
+        });
+        fixAll.onclick = () => {
+            new BtmConfirmationModal(
+                this.app,
+                'Fix all property types?',
+                `Remove the quotes from ${this.issues.length} values across ` +
+                    `${new Set(this.issues.map((i) => i.path)).size} notes. This can be undone.`,
+                async () => {
+                    const n = await this.plugin.fixPropertyIssues(this.issues);
+                    new Notice(`Fixed property types in ${n} notes.`);
+                    this.onDone();
+                    this.close();
+                }
+            ).open();
+        };
+    }
+
+    onClose() {
+        this.contentEl.empty();
+    }
+}
+
 // Invalid Tags Modal
 class InvalidTagsModal extends Modal {
     private plugin: TagLowercasePlugin;
@@ -5399,6 +5631,8 @@ class BulkManagerSettingsDashboard {
     contentEl: HTMLElement;
     statsEl: HTMLElement;
     invalidBlock: HTMLElement;
+    propertyBlock: HTMLElement;
+    propertyContentEl: HTMLElement;
     invalidContentEl: HTMLElement;
     metricsGrid: HTMLElement;
 
@@ -5424,6 +5658,12 @@ class BulkManagerSettingsDashboard {
         this.invalidBlock = contentEl.createDiv({ cls: 'btm-section-box btm-invalid-block' });
         this.invalidBlock.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Invalid Tags (Real-time)' });
         this.invalidContentEl = this.invalidBlock.createDiv({ cls: 'btm-invalid-content' });
+
+        this.propertyBlock = contentEl.createDiv({ cls: 'btm-section-box btm-invalid-block' });
+        this.propertyBlock
+            .createDiv({ cls: 'btm-collapsible-header' })
+            .createSpan({ text: 'Property types (Real-time)' });
+        this.propertyContentEl = this.propertyBlock.createDiv({ cls: 'btm-invalid-content' });
         void this.updateStats();
 
         let isExpanded = true;
@@ -6025,41 +6265,6 @@ class BulkManagerSettingsDashboard {
             });
         };
 
-        const utilBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        utilBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Metadata Utilities' });
-        const utilRow = utilBox.createDiv({ cls: 'btm-util-column' });
-        const btnClean = this.createIconButton(utilRow, 'file-check', 'Clean front matter formatting');
-        setTooltip(btnClean, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
-        btnClean.onclick = () => void this.plugin.standardiseProperties();
-        const btnAllInline = this.createIconButton(utilRow, 'list-plus', 'Standardise to Inline Array');
-        btnAllInline.onclick = () => {
-            const files = this.plugin.getFilteredFiles();
-            new BtmConfirmationModal(
-                this.app,
-                'Standardise to Inline Array',
-                `Convert tags and wiki links to inline arrays across ${files.length} files?`,
-                async () => {
-                    await this.plugin.convertTagFormat(files, 'inline', true);
-                    await this.plugin.convertWikiLinkFormat(files, 'inline', true);
-                    void this.updateStats();
-                }
-            ).open();
-        };
-        const btnAllList = this.createIconButton(utilRow, 'list-minus', 'Standardise to YAML List');
-        btnAllList.onclick = () => {
-            const files = this.plugin.getFilteredFiles();
-            new BtmConfirmationModal(
-                this.app,
-                'Standardise to YAML List',
-                `Convert tags and wiki links to YAML lists across ${files.length} files?`,
-                async () => {
-                    await this.plugin.convertTagFormat(files, 'list', true);
-                    await this.plugin.convertWikiLinkFormat(files, 'list', true);
-                    void this.updateStats();
-                }
-            ).open();
-        };
-
         const actionBox = contentEl.createDiv({ cls: 'btm-section-box' });
         actionBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Other Actions' });
         const actionRowBottom = actionBox.createDiv({ cls: 'btm-action-row' });
@@ -6394,6 +6599,7 @@ class BulkManagerSettingsDashboard {
         }
 
         await this.checkInvalidTags();
+        await this.checkInvalidProperties();
         await this.checkEmptyTags();
     }
 
@@ -6422,6 +6628,41 @@ class BulkManagerSettingsDashboard {
         }
     }
 
+    async checkInvalidProperties() {
+        if (!this.propertyContentEl) return;
+        this.propertyContentEl.empty();
+
+        const issues = await this.plugin.findInvalidProperties();
+        if (!issues.length) {
+            this.propertyBlock.hide();
+            return;
+        }
+
+        this.propertyBlock.show();
+        const noteCount = new Set(issues.map((i) => i.path)).size;
+        const warningRow = this.propertyContentEl.createDiv({ cls: 'btm-invalid-warning' });
+        const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
+        setIcon(iconEl, 'alert-triangle');
+        warningRow.createSpan({
+            text: ` ${issues.length} value${issues.length > 1 ? 's' : ''} in ${noteCount} file${noteCount > 1 ? 's' : ''} with a type mismatch`
+        });
+        const manageBtn = warningRow.createEl('button', { text: 'Manage', cls: 'mod-warning btm-fix-invalid-btn' });
+        manageBtn.onclick = () =>
+            new InvalidPropertiesModal(this.app, this.plugin, issues, () => {
+                void this.checkInvalidProperties();
+            }).open();
+
+        const byProperty = new Map<string, number>();
+        for (const issue of issues) byProperty.set(issue.property, (byProperty.get(issue.property) ?? 0) + 1);
+        const list = this.propertyContentEl.createDiv({ cls: 'btm-invalid-mini-list' });
+        [...byProperty.entries()].slice(0, 3).forEach(([name, count]) => {
+            list.createDiv({ text: `${name} — ${count} value${count > 1 ? 's' : ''}`, cls: 'btm-invalid-mini-item' });
+        });
+        if (byProperty.size > 3) {
+            list.createDiv({ text: `... and ${byProperty.size - 3} more`, cls: 'btm-more' });
+        }
+    }
+
     async checkEmptyTags() {
         const emptyFiles = await this.plugin.findEmptyTags();
         if (emptyFiles.length > 0 && this.metricsGrid) {
@@ -6445,6 +6686,8 @@ class TagManagerModal extends Modal {
     patternReplaceInput: TextComponent;
     metricsGrid: HTMLElement; // For layout consistency
     invalidBlock: HTMLElement;
+    propertyBlock: HTMLElement;
+    propertyContentEl: HTMLElement;
     invalidContentEl: HTMLElement;
 
     constructor(app: App, plugin: TagLowercasePlugin) {
@@ -6472,6 +6715,12 @@ class TagManagerModal extends Modal {
         this.invalidBlock = contentEl.createDiv({ cls: 'btm-section-box btm-invalid-block' });
         this.invalidBlock.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Invalid Tags (Real-time)' });
         this.invalidContentEl = this.invalidBlock.createDiv({ cls: 'btm-invalid-content' });
+
+        this.propertyBlock = contentEl.createDiv({ cls: 'btm-section-box btm-invalid-block' });
+        this.propertyBlock
+            .createDiv({ cls: 'btm-collapsible-header' })
+            .createSpan({ text: 'Property types (Real-time)' });
+        this.propertyContentEl = this.propertyBlock.createDiv({ cls: 'btm-invalid-content' });
 
         this.updateStats().catch((e) => console.error('Failed to update stats', e));
 
@@ -7087,64 +7336,6 @@ class TagManagerModal extends Modal {
 
         // Removed Fix Invalid from here (it belongs in the Invalid Tags block below Overview)
 
-        // --- Metadata Utilities ---
-        const utilBox = contentEl.createDiv({ cls: 'btm-section-box' });
-        utilBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Metadata Utilities' });
-        const utilRow = utilBox.createDiv({ cls: 'btm-util-column' });
-
-        const btnClean = this.createIconButton(utilRow, 'file-check', 'Clean front matter formatting');
-        setTooltip(btnClean, 'Remove unnecessary quotes and trim whitespace from all frontmatter fields');
-        btnClean.onclick = () => void this.plugin.standardiseProperties();
-
-        const btnAllInline = this.createIconButton(utilRow, 'list-plus', 'Standardise to Inline Array');
-        setTooltip(btnAllInline, 'Convert all tags AND wiki link properties to Inline Array format [ ]');
-        btnAllInline.onclick = () => {
-            const files = this.plugin.getFilteredFiles();
-            new BtmConfirmationModal(
-                this.app,
-                'Standardise All to Inline Array',
-                `Are you sure you want to convert all tags and wiki links to Inline Array across ${files.length} files?`,
-                async () => {
-                    const progressModal = new ProgressModal(this.app, files.length * 2);
-                    progressModal.open();
-
-                    await this.plugin.convertTagFormat(files, 'inline', true);
-                    progressModal.update(files.length);
-
-                    await this.plugin.convertWikiLinkFormat(files, 'inline', true);
-
-                    progressModal.close();
-                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                    new Notice('Finished standardising all properties to inline array.');
-                }
-            ).open();
-        };
-
-        const btnAllList = this.createIconButton(utilRow, 'list-minus', 'Standardise to YAML List');
-        setTooltip(btnAllList, 'Convert all tags AND wiki link properties to multiline YAML List format -');
-        btnAllList.onclick = () => {
-            const files = this.plugin.getFilteredFiles();
-            new BtmConfirmationModal(
-                this.app,
-                'Standardise All to YAML List',
-                `Are you sure you want to convert all tags and wiki links to YAML List across ${files.length} files?`,
-                async () => {
-                    const progressModal = new ProgressModal(this.app, files.length * 2);
-                    progressModal.open();
-
-                    await this.plugin.convertTagFormat(files, 'list', true);
-                    progressModal.update(files.length);
-
-                    await this.plugin.convertWikiLinkFormat(files, 'list', true);
-
-                    progressModal.close();
-                    this.updateStats().catch((e) => console.error('Failed to update stats', e));
-                    new Notice('Finished standardising all properties to YAML list.');
-                }
-            ).open();
-        };
-
-        // --- Action Row (Bottom) ---
         const actionBox = contentEl.createDiv({ cls: 'btm-section-box' });
         actionBox.createDiv({ cls: 'btm-collapsible-header' }).createSpan({ text: 'Other actions' });
         const actionRow = actionBox.createDiv({ cls: 'btm-action-row' });
@@ -7543,6 +7734,7 @@ class TagManagerModal extends Modal {
 
         // Async check for invalid tags
         this.checkInvalidTags().catch((e) => console.error('Failed to check invalid tags', e));
+        this.checkInvalidProperties().catch((e) => console.error('Failed to check property types', e));
         this.checkEmptyTags().catch((e) => console.error('Failed to check empty tags', e));
     }
 
@@ -7581,6 +7773,41 @@ class TagManagerModal extends Modal {
             }
         } else {
             this.invalidBlock.hide();
+        }
+    }
+
+    async checkInvalidProperties() {
+        if (!this.propertyContentEl) return;
+        this.propertyContentEl.empty();
+
+        const issues = await this.plugin.findInvalidProperties();
+        if (!issues.length) {
+            this.propertyBlock.hide();
+            return;
+        }
+
+        this.propertyBlock.show();
+        const noteCount = new Set(issues.map((i) => i.path)).size;
+        const warningRow = this.propertyContentEl.createDiv({ cls: 'btm-invalid-warning' });
+        const iconEl = warningRow.createSpan({ cls: 'btm-icon' });
+        setIcon(iconEl, 'alert-triangle');
+        warningRow.createSpan({
+            text: ` ${issues.length} value${issues.length > 1 ? 's' : ''} in ${noteCount} file${noteCount > 1 ? 's' : ''} with a type mismatch`
+        });
+        const manageBtn = warningRow.createEl('button', { text: 'Manage', cls: 'mod-warning btm-fix-invalid-btn' });
+        manageBtn.onclick = () =>
+            new InvalidPropertiesModal(this.app, this.plugin, issues, () => {
+                void this.checkInvalidProperties();
+            }).open();
+
+        const byProperty = new Map<string, number>();
+        for (const issue of issues) byProperty.set(issue.property, (byProperty.get(issue.property) ?? 0) + 1);
+        const list = this.propertyContentEl.createDiv({ cls: 'btm-invalid-mini-list' });
+        [...byProperty.entries()].slice(0, 3).forEach(([name, count]) => {
+            list.createDiv({ text: `${name} — ${count} value${count > 1 ? 's' : ''}`, cls: 'btm-invalid-mini-item' });
+        });
+        if (byProperty.size > 3) {
+            list.createDiv({ text: `... and ${byProperty.size - 3} more`, cls: 'btm-more' });
         }
     }
 
