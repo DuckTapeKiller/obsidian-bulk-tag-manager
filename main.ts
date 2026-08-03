@@ -1304,7 +1304,8 @@ export default class TagLowercasePlugin extends Plugin {
         const files = this.getFilteredFiles();
         const affectedFiles: PreviewFile[] = [];
         for (const file of files) {
-            const content = await this.app.vault.read(file);
+            // Read-only scan, so cachedRead avoids a disk hit per file.
+            const content = await this.app.vault.cachedRead(file);
             const codeBlockRanges = this.getCodeBlockRanges(content);
             const fmMatch = content.match(/^---\n[\s\S]*?\n---/);
             const skipStart = fmMatch ? fmMatch[0].length : 0;
@@ -1648,7 +1649,8 @@ export default class TagLowercasePlugin extends Plugin {
         // First pass: find files that contain the tag
         const matchingFiles: TFile[] = [];
         for (const file of files) {
-            const content = await this.app.vault.read(file);
+            // Read-only scan, so cachedRead avoids a disk hit per file.
+            const content = await this.app.vault.cachedRead(file);
             const cache = this.app.metadataCache.getFileCache(file);
 
             // Check frontmatter tags
