@@ -1,7 +1,7 @@
 {
     "id": "bulk-tag-manager",
     "name": "Bulk Tag Manager",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "minAppVersion": "1.6.0",
     "description": "Bulk rename, merge, delete, and standardise tags and front matter across your entire vault. Includes format conversion, case normalisation, scope filtering, regex patterns, analytics, and full undo history.",
     "author": "DuckTapeKiller",
