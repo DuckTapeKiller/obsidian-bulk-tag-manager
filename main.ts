@@ -6272,7 +6272,7 @@ class BulkManagerSettingsDashboard {
         warningRow.createSpan({
             text: ` ${invalidFiles.length} file${invalidFiles.length > 1 ? 's' : ''} with invalid tags`
         });
-        const fixBtn = warningRow.createEl('button', { text: 'Fix invalid', cls: 'mod-warning btm-fix-invalid-btn' });
+        const fixBtn = warningRow.createEl('button', { text: 'Manage', cls: 'mod-warning btm-fix-invalid-btn' });
         fixBtn.onclick = () => new InvalidTagsModal(this.app, this.plugin, invalidFiles).open();
 
         const list = this.invalidContentEl.createDiv({ cls: 'btm-invalid-mini-list' });
@@ -7423,7 +7423,7 @@ class TagManagerModal extends Modal {
             });
 
             const fixBtn = warningRow.createEl('button', {
-                text: 'Fix invalid',
+                text: 'Manage',
                 cls: 'mod-warning btm-fix-invalid-btn'
             });
             fixBtn.onclick = () => {
