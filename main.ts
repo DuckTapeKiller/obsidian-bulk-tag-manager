@@ -462,6 +462,94 @@ export default class TagLowercasePlugin extends Plugin {
         this.aliasDebounceTimers.set(file.path, timer);
     }
 
+    /**
+     * True when `file` could contain one of `rawTags`, or a child of one.
+     *
+     * Bulk operations must call this before touching a note. Both
+     * `fileManager.processFrontMatter()` and `vault.process()` save the file whether or
+     * not their callback changed anything, and Obsidian's frontmatter round-trip is not
+     * byte-preserving -- it strips quotes, so `title: "2018-08-17"` comes back as
+     * `title: 2018-08-17` and a quoted `"1721"` can come back as an integer. Running an
+     * operation over every note therefore rewrote frontmatter right across the vault.
+     * Those collateral rewrites were never recorded in the operation's history, so undo
+     * could not reverse them.
+     *
+     * `tagRegex` is the operation's own inline-tag pattern; its lastIndex is reset both
+     * before and after use so the caller's iteration is unaffected.
+     */
+    private fileMayContainTags(file: TFile, content: string, rawTags: string[], tagRegex: RegExp): boolean {
+        if (rawTags.length === 0) return false;
+
+        tagRegex.lastIndex = 0;
+        const hasInline = tagRegex.test(content);
+        tagRegex.lastIndex = 0;
+        if (hasInline) return true;
+
+        const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (!frontmatter) return false;
+
+        for (const key of ['tags', 'tag']) {
+            const value = (frontmatter as Record<string, unknown>)[key];
+            if (!value) continue;
+            for (const entry of Array.isArray(value) ? value : [value]) {
+                if (typeof entry !== 'string') continue;
+                const raw = entry.startsWith('#') ? entry.substring(1) : entry;
+                if (rawTags.some((t) => raw === t || raw.startsWith(t + '/'))) return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Pattern-matching counterpart to {@link fileMayContainTags}, for operations driven by
+     * a user regex rather than a fixed tag list. Mirrors the same skip rules the rename
+     * itself applies -- frontmatter offsets, code blocks and protected tags -- so a note is
+     * only considered a candidate if the rename would genuinely alter one of its tags.
+     */
+    private fileMayMatchTagPattern(file: TFile, content: string, regex: RegExp, replacement: string): boolean {
+        const wouldChange = (raw: string): boolean => {
+            regex.lastIndex = 0;
+            const next = raw.replace(regex, replacement);
+            regex.lastIndex = 0;
+            return next !== raw;
+        };
+
+        const codeBlockRanges = this.getCodeBlockRanges(content);
+        const fmMatch = content.match(/^---\n[\s\S]*?\n---/);
+        const skipStart = fmMatch ? fmMatch[0].length : 0;
+
+        TAG_REGEX.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = TAG_REGEX.exec(content)) !== null) {
+            const offset = match.index;
+            if (offset < skipStart) continue;
+            if (this.isInCodeBlockRange(offset, codeBlockRanges)) continue;
+            if (this.isTagProtected(match[2])) continue;
+            if (wouldChange(match[2].substring(1))) {
+                TAG_REGEX.lastIndex = 0;
+                return true;
+            }
+        }
+        TAG_REGEX.lastIndex = 0;
+
+        const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (!frontmatter) return false;
+
+        for (const key of ['tags', 'tag']) {
+            const value = (frontmatter as Record<string, unknown>)[key];
+            if (!value) continue;
+            for (const entry of Array.isArray(value) ? value : [value]) {
+                if (typeof entry !== 'string') continue;
+                const raw = entry.startsWith('#') ? entry.substring(1) : entry;
+                if (this.isTagProtected(raw)) continue;
+                if (wouldChange(raw)) return true;
+            }
+        }
+
+        return false;
+    }
+
     async loadSettings() {
         const loadedRaw: unknown = await this.loadData();
         const loaded = isRecord(loadedRaw) ? (loadedRaw as Partial<TagLowercaseSettings>) : {};
@@ -1882,6 +1970,13 @@ export default class TagLowercasePlugin extends Plugin {
             try {
                 const before = await this.app.vault.read(file);
                 let modified = false;
+                // See fileMayContainTags(): skipping notes that cannot match is what keeps
+                // this operation from rewriting frontmatter across the entire vault.
+                if (!this.fileMayContainTags(file, before, sourcesClean, tagRegex)) {
+                    processedCount++;
+                    progressModal.update(processedCount);
+                    continue;
+                }
 
                 // Process frontmatter tags
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
@@ -2131,6 +2226,13 @@ export default class TagLowercasePlugin extends Plugin {
             try {
                 const before = await this.app.vault.read(file);
                 let modified = false;
+                // See fileMayContainTags(): skipping notes that cannot match is what keeps
+                // this operation from rewriting frontmatter across the entire vault.
+                if (!this.fileMayContainTags(file, before, toNest, tagRegex)) {
+                    processedCount++;
+                    progressModal.update(processedCount);
+                    continue;
+                }
 
                 // Process frontmatter tags
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
@@ -2344,6 +2446,13 @@ export default class TagLowercasePlugin extends Plugin {
             try {
                 const before = await this.app.vault.read(file);
                 let modified = false;
+                // See fileMayContainTags(): skipping notes that cannot match is what keeps
+                // this operation from rewriting frontmatter across the entire vault.
+                if (!this.fileMayContainTags(file, before, Array.from(renameMap.keys()), tagRegex)) {
+                    processedCount++;
+                    progressModal.update(processedCount);
+                    continue;
+                }
 
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
                     const processSingleTag = (t: string): string => {
@@ -2486,6 +2595,13 @@ export default class TagLowercasePlugin extends Plugin {
             try {
                 const before = await this.app.vault.read(file);
                 let modified = false;
+                // See fileMayContainTags(): skipping notes that cannot match is what keeps
+                // this operation from rewriting frontmatter across the entire vault.
+                if (!this.fileMayContainTags(file, before, deletableTags, tagRegex)) {
+                    processedCount++;
+                    progressModal.update(processedCount);
+                    continue;
+                }
 
                 // Process Frontmatter
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
@@ -2598,6 +2714,14 @@ export default class TagLowercasePlugin extends Plugin {
             try {
                 const before = await this.app.vault.read(file);
                 let after = before;
+
+                // See fileMayMatchTagPattern(): skipping notes the pattern cannot alter is
+                // what keeps this operation from rewriting frontmatter across the vault.
+                if (!this.fileMayMatchTagPattern(file, before, regex, replacement)) {
+                    processedCount++;
+                    progressModal.update(processedCount);
+                    continue;
+                }
 
                 // Process frontmatter tags
                 await this.app.fileManager.processFrontMatter(file, (fm) => {
