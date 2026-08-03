@@ -1480,7 +1480,10 @@ export default class TagLowercasePlugin extends Plugin {
 
         const sortedTags = Object.keys(tags).sort((a, b) => a.localeCompare(b));
 
-        const fileContent = `# All Tags\n\n${sortedTags.map((t) => `${t} (${tags[t]})`).join('\n')}\n`;
+        // Each tag is wrapped in backticks so the generated note does not itself register
+        // as a use of every tag in the vault. Written bare, this one file adds +1 to every
+        // count, which in turn hides every orphaned tag from the orphan report.
+        const fileContent = `# All Tags\n\n${sortedTags.map((t) => `\`${t}\` (${tags[t]})`).join('\n')}\n`;
         const fileName = 'All Tags.md'; // Could be made configurable in settings later
 
         const existingFile = this.app.vault.getAbstractFileByPath(fileName);
