@@ -134,6 +134,7 @@ interface TagLowercaseSettings {
     orphanThreshold: number;
     maxHistorySize: number;
     historyExpirationDays: number;
+    maxHistoryMB: number;
     ignoredIssues: string[];
     protectedTags: string[];
 }
@@ -157,6 +158,7 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
     orphanThreshold: 2,
     maxHistorySize: 50,
     historyExpirationDays: 7,
+    maxHistoryMB: 100,
     ignoredIssues: [],
     protectedTags: []
 };
@@ -219,6 +221,27 @@ function getVaultTags(app: App): Record<string, number> {
 function getCachedFilePaths(app: App): string[] {
     const cache = app.metadataCache as typeof app.metadataCache & InternalMetadataCache;
     return cache.getCachedFiles?.() ?? [];
+}
+
+/**
+ * SHA-256 of `text` as hex, or null where Web Crypto is unavailable.
+ *
+ * Undo only ever compares the post-operation snapshot against the note's current content
+ * to detect later edits, so a digest answers that question exactly as well as a full copy
+ * while halving what history costs on disk. Callers fall back to storing the full text
+ * when this returns null.
+ */
+async function sha256Hex(text: string): Promise<string | null> {
+    try {
+        const subtle = globalThis.crypto?.subtle;
+        if (!subtle) return null;
+        const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+        return Array.from(new Uint8Array(digest))
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('');
+    } catch {
+        return null;
+    }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1080,6 +1103,77 @@ export default class TagLowercasePlugin extends Plugin {
 
     // --- History Management ---
 
+    /** Root of the external snapshot store. Kept in one place so the paths cannot drift. */
+    private get historyRoot(): string {
+        return `${this.app.vault.configDir}/plugins/bulk-tag-manager/history`;
+    }
+
+    /**
+     * Total bytes currently used by history snapshots on disk.
+     */
+    async getHistoryDiskUsage(): Promise<number> {
+        const measure = async (dir: string): Promise<number> => {
+            let total = 0;
+            if (!(await this.app.vault.adapter.exists(dir))) return 0;
+            const listing = await this.app.vault.adapter.list(dir);
+            for (const filePath of listing.files) {
+                const stat = await this.app.vault.adapter.stat(filePath);
+                total += stat?.size ?? 0;
+            }
+            for (const folder of listing.folders) {
+                total += await measure(folder);
+            }
+            return total;
+        };
+
+        try {
+            return await measure(this.historyRoot);
+        } catch (e) {
+            console.error('Failed to measure history usage:', e);
+            return 0;
+        }
+    }
+
+    /**
+     * Drop the oldest operations until the snapshot store fits within maxHistoryMB.
+     *
+     * The newest entry is always kept, even when it alone exceeds the budget: undoing the
+     * operation you just ran is the most valuable entry in the store, and silently making
+     * it unrevertible to satisfy a size cap would be the wrong trade.
+     */
+    async enforceHistoryDiskBudget() {
+        const budgetMb = this.settings.maxHistoryMB;
+        if (!budgetMb || budgetMb <= 0) return;
+
+        const budgetBytes = budgetMb * 1024 * 1024;
+        try {
+            let usage = await this.getHistoryDiskUsage();
+            while (usage > budgetBytes && this.settings.operationHistory.length > 1) {
+                const oldest = this.settings.operationHistory.pop();
+                if (!oldest) break;
+                await this.deleteExternalHistory(oldest.id);
+                usage = await this.getHistoryDiskUsage();
+            }
+        } catch (e) {
+            console.error('Failed to enforce history disk budget:', e);
+        }
+    }
+
+    /**
+     * Remove every snapshot, including any directory orphaned by an interrupted operation.
+     */
+    async clearAllHistory() {
+        try {
+            if (await this.app.vault.adapter.exists(this.historyRoot)) {
+                await this.app.vault.adapter.rmdir(this.historyRoot, true);
+            }
+        } catch (e) {
+            console.error('Failed to remove history directory:', e);
+        }
+        this.settings.operationHistory = [];
+        await this.saveSettings();
+    }
+
     async addToHistory(record: Omit<OperationRecord, 'id' | 'timestamp' | 'changes'> & { changes: FileChange[] }) {
         const operationId = crypto.randomUUID();
         const fullRecord: OperationRecord = {
@@ -1093,14 +1187,28 @@ export default class TagLowercasePlugin extends Plugin {
 
         // External Storage Implementation
         try {
-            const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${operationId}`;
+            const historyDir = `${this.historyRoot}/${operationId}`;
             await this.app.vault.adapter.mkdir(historyDir);
 
+            // ".before" is the content undo restores, so it is stored in full. The
+            // post-operation state is only ever compared for equality, so a digest is
+            // enough -- see sha256Hex(). All digests go in one file rather than one per
+            // note: at 64 bytes each they would otherwise burn a filesystem block apiece,
+            // which on a vault-wide operation costs more than the data itself.
+            // Older entries hold the full text in "<i>.after"; undo still understands those.
+            const afterHashes: (string | null)[] = [];
             for (let i = 0; i < record.changes.length; i++) {
                 const change = record.changes[i];
-                // Store both before and after for completeness
                 await this.app.vault.adapter.write(`${historyDir}/${i}.before`, change.before);
-                await this.app.vault.adapter.write(`${historyDir}/${i}.after`, change.after);
+                const afterHash = await sha256Hex(change.after);
+                afterHashes.push(afterHash);
+                if (!afterHash) {
+                    // No Web Crypto available; fall back to a full copy for this entry.
+                    await this.app.vault.adapter.write(`${historyDir}/${i}.after`, change.after);
+                }
+            }
+            if (afterHashes.some((h) => h !== null)) {
+                await this.app.vault.adapter.write(`${historyDir}/hashes.json`, JSON.stringify(afterHashes));
             }
 
             // Save the manifest (file paths) externally
@@ -1135,6 +1243,9 @@ export default class TagLowercasePlugin extends Plugin {
         // 3. Purge by age
         await this.purgeExpiredHistory();
 
+        // 4. Cap by bytes actually on disk
+        await this.enforceHistoryDiskBudget();
+
         await this.saveSettings();
     }
 
@@ -1164,7 +1275,7 @@ export default class TagLowercasePlugin extends Plugin {
 
     async deleteExternalHistory(id: string) {
         try {
-            const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${id}`;
+            const historyDir = `${this.historyRoot}/${id}`;
             if (await this.app.vault.adapter.exists(historyDir)) {
                 await this.app.vault.adapter.rmdir(historyDir, true);
             }
@@ -1189,7 +1300,7 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
-        const historyDir = `${this.app.vault.configDir}/plugins/bulk-tag-manager/history/${lastOp.id}`;
+        const historyDir = `${this.historyRoot}/${lastOp.id}`;
         let fileChanges = lastOp.changes;
 
         // Load manifest if stored externally
@@ -1207,6 +1318,18 @@ export default class TagLowercasePlugin extends Plugin {
                 new Notice('Failed to load history manifest.');
                 return;
             }
+        }
+
+        // Digests of what the operation left on disk, indexed like the snapshots.
+        let afterHashes: (string | null)[] = [];
+        try {
+            const hashesPath = `${historyDir}/hashes.json`;
+            if (await this.app.vault.adapter.exists(hashesPath)) {
+                const parsed: unknown = JSON.parse(await this.app.vault.adapter.read(hashesPath));
+                if (Array.isArray(parsed)) afterHashes = parsed as (string | null)[];
+            }
+        } catch (e) {
+            console.error('Failed to load history hashes:', e);
         }
 
         this.isBulkOperationInProgress = true;
@@ -1232,22 +1355,30 @@ export default class TagLowercasePlugin extends Plugin {
                     }
 
                     if (beforeContent && beforeContent !== '(Snapshot omitted due to size)') {
-                        // The ".after" snapshot is what this plugin left on disk. If the file
-                        // no longer matches it, someone has edited the note since, and a blind
-                        // revert would silently discard that newer work.
+                        // The post-operation snapshot is what this plugin left on disk. If
+                        // the note no longer matches it, someone has edited it since, and a
+                        // blind revert would silently discard that newer work. Newer entries
+                        // store a digest; older ones store the full text.
                         if (lastOp.useExternalStorage) {
+                            const expectedHash = afterHashes[i];
                             const afterPath = `${historyDir}/${i}.after`;
-                            if (await this.app.vault.adapter.exists(afterPath)) {
+                            let editedSince = false;
+
+                            if (typeof expectedHash === 'string') {
+                                const current = await sha256Hex(await this.app.vault.read(file));
+                                editedSince = current !== null && current !== expectedHash;
+                            } else if (await this.app.vault.adapter.exists(afterPath)) {
                                 const expected = await this.app.vault.adapter.read(afterPath);
-                                const current = await this.app.vault.read(file);
-                                if (current !== expected) {
-                                    skipped.push({
-                                        path: change.path,
-                                        message:
-                                            'Edited since the operation ran. Left untouched so the newer changes are not lost.'
-                                    });
-                                    continue;
-                                }
+                                editedSince = (await this.app.vault.read(file)) !== expected;
+                            }
+
+                            if (editedSince) {
+                                skipped.push({
+                                    path: change.path,
+                                    message:
+                                        'Edited since the operation ran. Left untouched so the newer changes are not lost.'
+                                });
+                                continue;
                             }
                         }
 
@@ -7556,23 +7687,56 @@ class TagLowercaseSettingTab extends PluginSettingTab {
             );
 
         new Setting(historySection)
-            .setName('Clear history')
-            .setDesc('Remove all operation history')
-            .addButton((btn) =>
-                btn
-                    .setButtonText('Clear')
-                    .setWarning()
-                    .onClick(() => {
+            .setName('History size limit (megabytes)')
+            .setDesc('Discard the oldest operations once snapshots exceed this size (0 to disable).')
+            .addSlider((slider) =>
+                slider
+                    .setLimits(0, 500, 25)
+                    .setValue(this.plugin.settings.maxHistoryMB)
+                    .setDynamicTooltip()
+                    .onChange((value) => {
                         runAsync(async () => {
-                            for (const op of this.plugin.settings.operationHistory) {
-                                await this.plugin.deleteExternalHistory(op.id);
-                            }
-                            this.plugin.settings.operationHistory = [];
+                            this.plugin.settings.maxHistoryMB = value;
                             await this.plugin.saveSettings();
-                            new Notice('History cleared.');
+                            await this.plugin.enforceHistoryDiskBudget();
+                            await this.plugin.saveSettings();
+                            this.renderHistoryUsage(usageSetting);
                         });
                     })
             );
+
+        const usageSetting = new Setting(historySection).setName('Clear history').addButton((btn) =>
+            btn
+                .setButtonText('Clear')
+                .setWarning()
+                .onClick(() => {
+                    runAsync(async () => {
+                        await this.plugin.clearAllHistory();
+                        new Notice('History cleared.');
+                        this.renderHistoryUsage(usageSetting);
+                    });
+                })
+        );
+
+        this.renderHistoryUsage(usageSetting);
+    }
+
+    /** Show what the snapshot store is currently using, against the configured budget. */
+    private renderHistoryUsage(setting: Setting) {
+        const format = (bytes: number) => {
+            if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+            if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+            return `${bytes} bytes`;
+        };
+
+        setting.setDesc('Measuring…');
+        runAsync(async () => {
+            const used = await this.plugin.getHistoryDiskUsage();
+            const ops = this.plugin.settings.operationHistory.length;
+            const budget = this.plugin.settings.maxHistoryMB;
+            const limit = budget > 0 ? ` of ${budget} MB` : ' (no limit)';
+            setting.setDesc(`${ops} operation${ops === 1 ? '' : 's'}, using ${format(used)}${limit}.`);
+        });
     }
 
     renderAliases(container: HTMLElement) {
