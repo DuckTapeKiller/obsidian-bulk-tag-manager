@@ -250,7 +250,7 @@ function getCachedFilePaths(app: App): string[] {
  */
 async function sha256Hex(text: string): Promise<string | null> {
     try {
-        const subtle = globalThis.crypto?.subtle;
+        const subtle = window.crypto?.subtle;
         if (!subtle) return null;
         const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
         return Array.from(new Uint8Array(digest))
@@ -5382,7 +5382,7 @@ class FolderSelectModal extends Modal {
                 this.listEl.createEl('p', { text: 'Start typing to search folders...', cls: 'btm-loading' });
                 return;
             }
-            this.listEl.createEl('div', { text: 'Selected folders:', cls: 'btm-list-header' });
+            this.listEl.createDiv({ text: 'Selected folders:', cls: 'btm-list-header' });
         } else {
             displayFolders = allFolders.filter((f) => f.toLowerCase().includes(query)).slice(0, 100);
             if (displayFolders.length === 0) {

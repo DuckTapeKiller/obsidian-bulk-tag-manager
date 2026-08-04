@@ -26,7 +26,7 @@
         "esbuild": "^0.24.2",
         "eslint": "^9.39.2",
         "eslint-config-prettier": "^10.1.8",
-        "eslint-plugin-obsidianmd": "^0.1.9",
+        "eslint-plugin-obsidianmd": "^0.4.1",
         "globals": "^17.0.0",
         "obsidian": "^1.7.2",
         "prettier": "^3.8.4",
