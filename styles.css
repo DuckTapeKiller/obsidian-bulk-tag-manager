@@ -754,18 +754,17 @@ body button.btm-icon-btn {
 }
 
 /* --- Modal sizing ---------------------------------------------------------
-   A modal's size belongs on the modal element. Putting max-width on the content
-   instead leaves a full-width dialog with a narrow column inside it, which is what
-   left long lists scrolling against a scrollbar stranded mid-dialog.
+   Obsidian already gives .modal a sensible default width and sizes it to its content,
+   so the plugin does not set one. What it must not do is cap the *content* narrower
+   than the dialog: that left a 400px column inside a 560px modal, with the list's
+   scrollbar stranded 160px short of the edge.
 
-   Every value here comes from Obsidian's own modal variables, so a theme that
-   resizes modals resizes these too. */
+   Height is capped to the viewport so a long list scrolls inside the dialog instead of
+   pushing the heading and buttons off the top of the screen. Values come from
+   Obsidian's own modal variables, so a theme that resizes modals resizes these too.
 
-/* Obsidian already gives .modal a sensible default width, so the plugin does not set
-   one. What it must not do is cap the *content* narrower than the dialog: that left a
-   400px column inside a 560px modal, with the list's scrollbar stranded 160px short of
-   the edge. Height is capped to the viewport so a long list scrolls inside the dialog
-   instead of pushing the heading and buttons off the top of the screen. */
+   On phones none of this applies: Obsidian's own `.is-phone .modal` rules are two
+   classes deep and take over, turning every dialog into a full-width bottom sheet. */
 .btm-modal-narrow,
 .btm-modal-wide {
     max-height: var(--modal-height);
