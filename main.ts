@@ -375,6 +375,19 @@ function applyToTagFieldWithDedup(
     return false;
 }
 
+/**
+ * Render a primitive the way String() would, so comparisons against frontmatter entries
+ * keep matching numbers and booleans. Objects return null rather than "[object Object]",
+ * which never matched a tag name anyway.
+ */
+function primitiveToString(value: unknown): string | null {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+        return String(value);
+    }
+    return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -707,8 +720,10 @@ export default class TagLowercasePlugin extends Plugin {
     async loadSettings() {
         const loadedRaw: unknown = await this.loadData();
         const loaded = isRecord(loadedRaw) ? (loadedRaw as Partial<TagLowercaseSettings>) : {};
-        const loadedScopeFilter = isRecord(loaded.scopeFilter) ? (loaded.scopeFilter as Partial<ScopeFilter>) : {};
-        const loadedAliases = isRecord(loaded.aliases) ? (loaded.aliases as Record<string, string>) : {};
+        const loadedScopeFilter: Partial<ScopeFilter> = isRecord(loaded.scopeFilter) ? loaded.scopeFilter : {};
+        const loadedAliases: Record<string, string> = isRecord(loaded.aliases)
+            ? (loaded.aliases as unknown as Record<string, string>)
+            : {};
 
         this.settings = {
             ...DEFAULT_SETTINGS,
@@ -1439,7 +1454,7 @@ export default class TagLowercasePlugin extends Plugin {
             try {
                 const manifestPath = `${historyDir}/manifest.json`;
                 if (await this.app.vault.adapter.exists(manifestPath)) {
-                    fileChanges = JSON.parse(await this.app.vault.adapter.read(manifestPath));
+                    fileChanges = JSON.parse(await this.app.vault.adapter.read(manifestPath)) as { path: string }[];
                 } else {
                     new Notice('Critical error: history manifest missing.');
                     return;
@@ -2145,19 +2160,22 @@ export default class TagLowercasePlugin extends Plugin {
                 let after = before;
                 await this.app.vault.process(file, (data) => {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
-                    const newData = data.replace(tagRegex, (m, prefix, hash, captured, offset) => {
-                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
-                        if (this.isTagProtected(captured)) return m;
+                    const newData = data.replace(
+                        tagRegex,
+                        (m: string, prefix: string, hash: string, captured: string, offset: number) => {
+                            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
+                            if (this.isTagProtected(captured)) return m;
 
-                        modified = true;
-                        // Handle child tags: #old/child → #new/child
-                        if (captured === search) {
-                            return prefix + hash + replace;
-                        } else if (captured.startsWith(search + '/')) {
-                            return prefix + hash + replace + captured.substring(search.length);
+                            modified = true;
+                            // Handle child tags: #old/child → #new/child
+                            if (captured === search) {
+                                return prefix + hash + replace;
+                            } else if (captured.startsWith(search + '/')) {
+                                return prefix + hash + replace + captured.substring(search.length);
+                            }
+                            return m;
                         }
-                        return m;
-                    });
+                    );
                     tagRegex.lastIndex = 0; // Reset regex state
                     after = newData;
                     return newData;
@@ -2314,24 +2332,27 @@ export default class TagLowercasePlugin extends Plugin {
                 let after = before;
                 await this.app.vault.process(file, (data) => {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
-                    let newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
-                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
-                        if (this.isTagProtected(capturedTag)) return match;
+                    let newData = data.replace(
+                        tagRegex,
+                        (match: string, prefix: string, hash: string, capturedTag: string, offset: number) => {
+                            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+                            if (this.isTagProtected(capturedTag)) return match;
 
-                        // Find which source tag matched and replace with target
-                        for (const source of sourcesClean) {
-                            if (capturedTag === source || capturedTag.startsWith(source + '/')) {
-                                modified = true;
-                                if (capturedTag === source) {
-                                    return prefix + hash + targetClean;
-                                } else {
-                                    // Nested tag: replace prefix
-                                    return prefix + hash + targetClean + capturedTag.substring(source.length);
+                            // Find which source tag matched and replace with target
+                            for (const source of sourcesClean) {
+                                if (capturedTag === source || capturedTag.startsWith(source + '/')) {
+                                    modified = true;
+                                    if (capturedTag === source) {
+                                        return prefix + hash + targetClean;
+                                    } else {
+                                        // Nested tag: replace prefix
+                                        return prefix + hash + targetClean + capturedTag.substring(source.length);
+                                    }
                                 }
                             }
+                            return match;
                         }
-                        return match;
-                    });
+                    );
 
                     // Collapse consecutive identical tags (e.g. #target #target -> #target)
                     // This handles the "merge creates duplicates" issue in the body
@@ -2541,24 +2562,27 @@ export default class TagLowercasePlugin extends Plugin {
                     const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
                     const skipStart = fmMatch ? fmMatch[0].length : 0;
 
-                    const newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
-                        if (offset < skipStart) return match;
-                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
-                        if (this.isTagProtected(capturedTag)) return match;
+                    const newData = data.replace(
+                        tagRegex,
+                        (match: string, prefix: string, hash: string, capturedTag: string, offset: number) => {
+                            if (offset < skipStart) return match;
+                            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+                            if (this.isTagProtected(capturedTag)) return match;
 
-                        // Find which child tag matched and replace with nested version
-                        for (const [child, nested] of renameMap) {
-                            if (capturedTag === child) {
-                                modified = true;
-                                return prefix + hash + nested;
+                            // Find which child tag matched and replace with nested version
+                            for (const [child, nested] of renameMap) {
+                                if (capturedTag === child) {
+                                    modified = true;
+                                    return prefix + hash + nested;
+                                }
+                                if (capturedTag.startsWith(child + '/')) {
+                                    modified = true;
+                                    return prefix + hash + nested + capturedTag.substring(child.length);
+                                }
                             }
-                            if (capturedTag.startsWith(child + '/')) {
-                                modified = true;
-                                return prefix + hash + nested + capturedTag.substring(child.length);
-                            }
+                            return match;
                         }
-                        return match;
-                    });
+                    );
 
                     tagRegex.lastIndex = 0;
                     after = newData;
@@ -2729,22 +2753,25 @@ export default class TagLowercasePlugin extends Plugin {
                     const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
                     const skipStart = fmMatch ? fmMatch[0].length : 0;
 
-                    const newData = data.replace(tagRegex, (match, prefix, hash, capturedTag, offset) => {
-                        if (offset < skipStart) return match;
-                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
-                        if (this.isTagProtected(capturedTag)) return match;
-                        for (const [from, to] of renameMap) {
-                            if (capturedTag === from) {
-                                modified = true;
-                                return prefix + hash + to;
+                    const newData = data.replace(
+                        tagRegex,
+                        (match: string, prefix: string, hash: string, capturedTag: string, offset: number) => {
+                            if (offset < skipStart) return match;
+                            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return match;
+                            if (this.isTagProtected(capturedTag)) return match;
+                            for (const [from, to] of renameMap) {
+                                if (capturedTag === from) {
+                                    modified = true;
+                                    return prefix + hash + to;
+                                }
+                                if (capturedTag.startsWith(from + '/')) {
+                                    modified = true;
+                                    return prefix + hash + to + capturedTag.substring(from.length);
+                                }
                             }
-                            if (capturedTag.startsWith(from + '/')) {
-                                modified = true;
-                                return prefix + hash + to + capturedTag.substring(from.length);
-                            }
+                            return match;
                         }
-                        return match;
-                    });
+                    );
                     tagRegex.lastIndex = 0;
                     after = newData;
                     return newData;
@@ -2956,18 +2983,21 @@ export default class TagLowercasePlugin extends Plugin {
                     const codeBlockRanges = this.getCodeBlockRanges(data);
                     const fmMatch = data.match(/^---\n[\s\S]*?\n---/);
                     const skipStart = fmMatch ? fmMatch[0].length : 0;
-                    const newData = data.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
-                        if (offset < skipStart) return fullMatch;
-                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return fullMatch;
-                        if (this.isTagProtected(tag)) return fullMatch;
-                        regex.lastIndex = 0;
-                        const clean = tag.substring(1);
-                        const newTag = clean.replace(regex, replacement);
-                        if (newTag !== clean) {
-                            return prefix + '#' + newTag;
+                    const newData = data.replace(
+                        TAG_REGEX,
+                        (fullMatch: string, prefix: string, tag: string, offset: number) => {
+                            if (offset < skipStart) return fullMatch;
+                            if (this.isInCodeBlockRange(offset, codeBlockRanges)) return fullMatch;
+                            if (this.isTagProtected(tag)) return fullMatch;
+                            regex.lastIndex = 0;
+                            const clean = tag.substring(1);
+                            const newTag = clean.replace(regex, replacement);
+                            if (newTag !== clean) {
+                                return prefix + '#' + newTag;
+                            }
+                            return fullMatch;
                         }
-                        return fullMatch;
-                    });
+                    );
                     after = newData;
                     return newData;
                 });
@@ -3162,7 +3192,7 @@ export default class TagLowercasePlugin extends Plugin {
                         for (const key in fm) {
                             if (key.toLowerCase() === 'tags' || key.toLowerCase() === 'tag') continue;
 
-                            const val = fm[key];
+                            const val: unknown = fm[key];
                             if (val === null || val === undefined) continue;
 
                             const valArray = Array.isArray(val) ? val : [val];
@@ -3426,7 +3456,8 @@ export default class TagLowercasePlugin extends Plugin {
                         if (err) issues.push(err);
                     } else if (Array.isArray(value)) {
                         value.forEach((t: unknown) => {
-                            const tagStr = String(t);
+                            if (typeof t !== 'string') return;
+                            const tagStr = t;
                             const clean = tagStr.startsWith('#') ? tagStr.substring(1) : tagStr;
 
                             if (seenInFM.has(clean)) {
@@ -3764,7 +3795,7 @@ export default class TagLowercasePlugin extends Plugin {
 
             // Check if 'tags' key exists but result is empty/null
             if ('tags' in fm) {
-                const val = fm.tags;
+                const val: unknown = fm.tags;
                 if (val === null || val === undefined || (Array.isArray(val) && val.length === 0)) {
                     emptyFiles.push(file);
                 }
@@ -3825,12 +3856,15 @@ export default class TagLowercasePlugin extends Plugin {
                 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 const regex = new RegExp(`(^|\\s)(#)(${escapeRegExp(alias)})(?=[\\s\\/]|$|[^\\p{L}\\p{N}_-])`, 'gu');
 
-                result = result.replace(regex, (m, prefix, hash, captured, offset) => {
-                    if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
-                    if (this.isTagProtected(captured)) return m;
+                result = result.replace(
+                    regex,
+                    (m: string, prefix: string, hash: string, captured: string, offset: number) => {
+                        if (this.isInCodeBlockRange(offset, codeBlockRanges)) return m;
+                        if (this.isTagProtected(captured)) return m;
 
-                    return prefix + hash + canonical;
-                });
+                        return prefix + hash + canonical;
+                    }
+                );
             }
             return result;
         });
@@ -3907,7 +3941,7 @@ export default class TagLowercasePlugin extends Plugin {
         codeBlocks: { start: number; end: number }[],
         overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }
     ): string {
-        return content.replace(TAG_REGEX, (fullMatch, prefix, tag, offset) => {
+        return content.replace(TAG_REGEX, (fullMatch: string, prefix: string, tag: string, offset: number) => {
             if (offset < skipStart) return fullMatch;
             if (codeBlocks.some((b) => offset >= b.start && offset < b.end)) return fullMatch;
             if (this.isTagProtected(tag.substring(1))) return fullMatch;
@@ -3998,7 +4032,7 @@ class ProgressModal extends Modal {
 
     update(current: number) {
         const percent = Math.round((current / this.total) * 100);
-        const fill = this.progressBar.querySelector('.btm-progress-fill') as HTMLElement;
+        const fill = this.progressBar.querySelector<HTMLElement>('.btm-progress-fill');
         if (fill) fill.setCssProps({ width: `${percent}%` });
         this.progressText.textContent = `${current} / ${this.total} (${percent}%)`;
     }
@@ -4614,12 +4648,14 @@ class InvalidTagsModal extends Modal {
                             if (file instanceof TFile) {
                                 await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                                     const updateOne = (key: string) => {
-                                        if (fm[key]) {
-                                            if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
+                                        const field: unknown = fm[key];
+                                        if (field) {
+                                            if (typeof field === 'string' && field === issue.tag) {
                                                 fm[key] = newValue;
-                                            } else if (Array.isArray(fm[key])) {
-                                                const idx = fm[key].findIndex((t: unknown) => String(t) === issue.tag);
-                                                if (idx > -1) fm[key][idx] = newValue;
+                                            } else if (Array.isArray(field)) {
+                                                const list: unknown[] = field;
+                                                const idx = list.findIndex((t) => primitiveToString(t) === issue.tag);
+                                                if (idx > -1) list[idx] = newValue;
                                             }
                                         }
                                     };
@@ -4643,12 +4679,14 @@ class InvalidTagsModal extends Modal {
                             if (file instanceof TFile) {
                                 await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                                     const removeOne = (key: string) => {
-                                        if (fm[key]) {
-                                            if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
+                                        const field: unknown = fm[key];
+                                        if (field) {
+                                            if (typeof field === 'string' && field === issue.tag) {
                                                 delete fm[key];
-                                            } else if (Array.isArray(fm[key])) {
-                                                const idx = fm[key].findIndex((t: unknown) => String(t) === issue.tag);
-                                                if (idx > -1) fm[key].splice(idx, 1);
+                                            } else if (Array.isArray(field)) {
+                                                const list: unknown[] = field;
+                                                const idx = list.findIndex((t) => primitiveToString(t) === issue.tag);
+                                                if (idx > -1) list.splice(idx, 1);
                                             }
                                         }
                                     };
@@ -5389,6 +5427,7 @@ class TagInteractionHandler extends Component {
                     }
 
                     const menuCtor = Menu as typeof Menu & { forEvent?: (event: MouseEvent) => Menu };
+                    // eslint-disable-next-line @typescript-eslint/unbound-method -- saved deliberately unbound: the patch below restores this original and re-invokes it via .apply(this, ...), which supplies the correct menu instance; binding here would break that
                     const originalShowAtPosition = Menu.prototype.showAtPosition;
                     const originalForEvent = menuCtor.forEvent;
                     const plugin = this.plugin;
@@ -5401,7 +5440,10 @@ class TagInteractionHandler extends Component {
                         menuCtor.forEvent = originalForEvent;
                     };
 
-                    Menu.prototype.showAtPosition = function (...args: Parameters<Menu['showAtPosition']>) {
+                    Menu.prototype.showAtPosition = function (
+                        this: Menu,
+                        ...args: Parameters<Menu['showAtPosition']>
+                    ): ReturnType<Menu['showAtPosition']> {
                         restore();
                         plugin.setupTagWranglerMenu(this, tagName);
                         return originalShowAtPosition.apply(this, args);
@@ -5409,7 +5451,7 @@ class TagInteractionHandler extends Component {
 
                     if (originalForEvent) {
                         menuCtor.forEvent = (ev: MouseEvent) => {
-                            const menu = originalForEvent.call(menuCtor, ev);
+                            const menu: Menu = originalForEvent.call(menuCtor, ev);
                             if (ev === mouseEvent) {
                                 this.plugin.setupTagWranglerMenu(menu, tagName);
                                 restore();
