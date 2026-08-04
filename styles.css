@@ -796,6 +796,22 @@ body button.btm-icon-btn {
     border-top: none;
 }
 
+/* Section titles come from two places: the dashboard builds its own headers as
+   .btm-collapsible-header, while the sections below it use Obsidian's Setting heading.
+   Match the second to the first so every section title reads the same. The dashboard
+   itself uses no Setting headings, so this cannot reach into it. */
+.btm-settings-page .setting-item-heading .setting-item-name {
+    font-size: 1.2em;
+    font-weight: 700;
+    color: var(--text-accent);
+}
+
+.btm-settings-page > .btm-section-box > .setting-item-heading,
+.btm-settings-page > .btm-settings-section > .setting-item-heading {
+    padding: 0;
+    margin-bottom: 12px;
+}
+
 .btm-settings-page .btm-section-box > p,
 .btm-settings-page .btm-settings-section > p {
     margin: 0 0 12px 0;
