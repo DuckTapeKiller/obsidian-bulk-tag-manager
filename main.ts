@@ -296,6 +296,85 @@ function bareTextMatchesType(text: string, type: string): boolean {
     }
 }
 
+/**
+ * Apply `transform` to a frontmatter tag field, writing back only when something changed.
+ *
+ * This is the shape the plugin has always used inline: arrays are mapped element-wise and
+ * a scalar string is handled on its own, while anything else is left alone. Obsidian types
+ * the frontmatter object as `any`, so keeping the access in one typed place is what lets
+ * the call sites stay free of unchecked member access.
+ */
+function applyToTagField(
+    frontmatter: Record<string, unknown>,
+    key: string,
+    transform: (value: unknown) => unknown
+): boolean {
+    const current = frontmatter[key];
+    if (!current) return false;
+
+    if (Array.isArray(current)) {
+        const list: unknown[] = current;
+        const next = list.map(transform);
+        if (next.some((value, index) => value !== list[index])) {
+            frontmatter[key] = next;
+            return true;
+        }
+        return false;
+    }
+
+    if (typeof current === 'string') {
+        const next = transform(current);
+        if (next !== current) {
+            frontmatter[key] = next;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Like {@link applyToTagField}, but also drops duplicates the transform created: merging
+ * or nesting two tags into one can leave the same value twice in a list. Entries are
+ * compared with their leading "#" removed, so "#foo" and "foo" count as the same tag.
+ */
+function applyToTagFieldWithDedup(
+    frontmatter: Record<string, unknown>,
+    key: string,
+    transform: (value: unknown) => unknown
+): boolean {
+    const current = frontmatter[key];
+    if (!current) return false;
+
+    if (Array.isArray(current)) {
+        const list: unknown[] = current;
+        const mapped = list.map(transform);
+        const unique: unknown[] = [];
+        const seen = new Set<unknown>();
+        for (const entry of mapped) {
+            const clean = typeof entry === 'string' && entry.startsWith('#') ? entry.substring(1) : entry;
+            if (seen.has(clean)) continue;
+            seen.add(clean);
+            unique.push(entry);
+        }
+        if (unique.length !== list.length || unique.some((value, index) => value !== list[index])) {
+            frontmatter[key] = unique;
+            return true;
+        }
+        return false;
+    }
+
+    if (typeof current === 'string') {
+        const next = transform(current);
+        if (next !== current) {
+            frontmatter[key] = next;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -2041,8 +2120,8 @@ export default class TagLowercasePlugin extends Plugin {
                 const before = await this.app.vault.read(file);
                 let modified = false;
 
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    const processSingleTag = (t: string): string => {
+                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+                    const processSingleTag = (t: unknown): unknown => {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
@@ -2059,28 +2138,8 @@ export default class TagLowercasePlugin extends Plugin {
                     };
 
                     // Issue 8: Only assign back if something actually changed
-                    if (fm.tags) {
-                        if (Array.isArray(fm.tags)) {
-                            const newTags = fm.tags.map(processSingleTag);
-                            if (newTags.some((t: string, i: number) => t !== fm.tags[i])) {
-                                fm.tags = newTags;
-                            }
-                        } else if (typeof fm.tags === 'string') {
-                            const newTag = processSingleTag(fm.tags);
-                            if (newTag !== fm.tags) fm.tags = newTag;
-                        }
-                    }
-                    if (fm.tag) {
-                        if (Array.isArray(fm.tag)) {
-                            const newTags = fm.tag.map(processSingleTag);
-                            if (newTags.some((t: string, i: number) => t !== fm.tag[i])) {
-                                fm.tag = newTags;
-                            }
-                        } else if (typeof fm.tag === 'string') {
-                            const newTag = processSingleTag(fm.tag);
-                            if (newTag !== fm.tag) fm.tag = newTag;
-                        }
-                    }
+                    applyToTagField(fm, 'tags', processSingleTag);
+                    applyToTagField(fm, 'tag', processSingleTag);
                 });
 
                 let after = before;
@@ -2225,8 +2284,8 @@ export default class TagLowercasePlugin extends Plugin {
                 }
 
                 // Process frontmatter tags
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    const processSingleTag = (t: string): string => {
+                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+                    const processSingleTag = (t: unknown): unknown => {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
@@ -2247,40 +2306,9 @@ export default class TagLowercasePlugin extends Plugin {
                     };
 
                     // Issue 8: Only assign back if something actually changed
-                    const handleTagKey = (key: string) => {
-                        if (fm[key]) {
-                            if (Array.isArray(fm[key])) {
-                                const newTags = fm[key].map(processSingleTag);
-                                // Deduplicate
-                                const uniqueTags = [];
-                                const seen = new Set();
-                                for (const t of newTags) {
-                                    const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
-                                    if (!seen.has(clean)) {
-                                        seen.add(clean);
-                                        uniqueTags.push(t);
-                                    }
-                                }
 
-                                if (
-                                    uniqueTags.length !== fm[key].length ||
-                                    uniqueTags.some((t: string, i: number) => t !== fm[key][i])
-                                ) {
-                                    fm[key] = uniqueTags;
-                                    modified = true;
-                                }
-                            } else if (typeof fm[key] === 'string') {
-                                const newTag = processSingleTag(fm[key]);
-                                if (newTag !== fm[key]) {
-                                    fm[key] = newTag;
-                                    modified = true;
-                                }
-                            }
-                        }
-                    };
-
-                    handleTagKey('tags');
-                    handleTagKey('tag');
+                    if (applyToTagFieldWithDedup(fm, 'tags', processSingleTag)) modified = true;
+                    if (applyToTagFieldWithDedup(fm, 'tag', processSingleTag)) modified = true;
                 });
 
                 let after = before;
@@ -2481,8 +2509,8 @@ export default class TagLowercasePlugin extends Plugin {
                 }
 
                 // Process frontmatter tags
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    const processSingleTag = (t: string): string => {
+                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+                    const processSingleTag = (t: unknown): unknown => {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
@@ -2502,38 +2530,8 @@ export default class TagLowercasePlugin extends Plugin {
                         return t;
                     };
 
-                    const handleTagKey = (key: string) => {
-                        if (!fm[key]) return;
-                        if (Array.isArray(fm[key])) {
-                            const newTags = fm[key].map(processSingleTag);
-                            // Deduplicate
-                            const uniqueTags: string[] = [];
-                            const seen = new Set<string>();
-                            for (const t of newTags) {
-                                const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
-                                if (!seen.has(clean)) {
-                                    seen.add(clean);
-                                    uniqueTags.push(t);
-                                }
-                            }
-                            if (
-                                uniqueTags.length !== fm[key].length ||
-                                uniqueTags.some((t: string, i: number) => t !== fm[key][i])
-                            ) {
-                                fm[key] = uniqueTags;
-                                modified = true;
-                            }
-                        } else if (typeof fm[key] === 'string') {
-                            const newTag = processSingleTag(fm[key]);
-                            if (newTag !== fm[key]) {
-                                fm[key] = newTag;
-                                modified = true;
-                            }
-                        }
-                    };
-
-                    handleTagKey('tags');
-                    handleTagKey('tag');
+                    if (applyToTagFieldWithDedup(fm, 'tags', processSingleTag)) modified = true;
+                    if (applyToTagFieldWithDedup(fm, 'tag', processSingleTag)) modified = true;
                 });
 
                 // Process inline body tags
@@ -2700,8 +2698,8 @@ export default class TagLowercasePlugin extends Plugin {
                     continue;
                 }
 
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    const processSingleTag = (t: string): string => {
+                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+                    const processSingleTag = (t: unknown): unknown => {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
@@ -2721,37 +2719,8 @@ export default class TagLowercasePlugin extends Plugin {
                         return t;
                     };
 
-                    const handleTagKey = (key: string) => {
-                        if (!fm[key]) return;
-                        if (Array.isArray(fm[key])) {
-                            const newTags = fm[key].map(processSingleTag);
-                            const uniqueTags: string[] = [];
-                            const seen = new Set<string>();
-                            for (const t of newTags) {
-                                const clean = typeof t === 'string' && t.startsWith('#') ? t.substring(1) : t;
-                                if (!seen.has(clean)) {
-                                    seen.add(clean);
-                                    uniqueTags.push(t);
-                                }
-                            }
-                            if (
-                                uniqueTags.length !== fm[key].length ||
-                                uniqueTags.some((t: string, i: number) => t !== fm[key][i])
-                            ) {
-                                fm[key] = uniqueTags;
-                                modified = true;
-                            }
-                        } else if (typeof fm[key] === 'string') {
-                            const n = processSingleTag(fm[key]);
-                            if (n !== fm[key]) {
-                                fm[key] = n;
-                                modified = true;
-                            }
-                        }
-                    };
-
-                    handleTagKey('tags');
-                    handleTagKey('tag');
+                    if (applyToTagFieldWithDedup(fm, 'tags', processSingleTag)) modified = true;
+                    if (applyToTagFieldWithDedup(fm, 'tag', processSingleTag)) modified = true;
                 });
 
                 let after = before;
@@ -2850,39 +2819,36 @@ export default class TagLowercasePlugin extends Plugin {
                 }
 
                 // Process Frontmatter
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    const shouldDelete = (t: string) => {
+                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+                    const shouldDelete = (t: unknown): boolean => {
+                        // Frontmatter lists can legitimately hold numbers or booleans;
+                        // without this guard they threw and the whole note was skipped.
+                        if (typeof t !== 'string') return false;
                         const raw = t.startsWith('#') ? t.substring(1) : t;
                         if (this.isTagProtected(raw)) return false;
                         // Check if raw is one of the tags to delete or a child of them
                         return deletableTags.some((del) => raw === del || raw.startsWith(del + '/'));
                     };
 
-                    if (fm.tags) {
-                        if (Array.isArray(fm.tags)) {
-                            const originalLen = fm.tags.length;
-                            fm.tags = fm.tags.filter((t: string) => !shouldDelete(t));
-                            if (fm.tags.length !== originalLen) modified = true;
-                        } else if (typeof fm.tags === 'string') {
-                            if (shouldDelete(fm.tags)) {
-                                delete fm.tags;
+                    const removeFromTagField = (key: string) => {
+                        const current = fm[key];
+                        if (!current) return;
+
+                        if (Array.isArray(current)) {
+                            const list: unknown[] = current;
+                            const kept = list.filter((t) => !shouldDelete(t));
+                            if (kept.length !== list.length) {
+                                fm[key] = kept;
                                 modified = true;
                             }
+                        } else if (typeof current === 'string' && shouldDelete(current)) {
+                            delete fm[key];
+                            modified = true;
                         }
-                    }
-                    if (fm.tag) {
-                        // handle 'tag' key
-                        if (Array.isArray(fm.tag)) {
-                            const originalLen = fm.tag.length;
-                            fm.tag = fm.tag.filter((t: string) => !shouldDelete(t));
-                            if (fm.tag.length !== originalLen) modified = true;
-                        } else if (typeof fm.tag === 'string') {
-                            if (shouldDelete(fm.tag)) {
-                                delete fm.tag;
-                                modified = true;
-                            }
-                        }
-                    }
+                    };
+
+                    removeFromTagField('tags');
+                    removeFromTagField('tag');
                 });
 
                 let after = before;
@@ -2970,8 +2936,8 @@ export default class TagLowercasePlugin extends Plugin {
                 }
 
                 // Process frontmatter tags
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    const processSingleTag = (t: string): string => {
+                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+                    const processSingleTag = (t: unknown): unknown => {
                         if (typeof t !== 'string') return t;
                         const hasHash = t.startsWith('#');
                         const raw = hasHash ? t.substring(1) : t;
@@ -2981,24 +2947,8 @@ export default class TagLowercasePlugin extends Plugin {
                         if (newRaw !== raw) return hasHash ? '#' + newRaw : newRaw;
                         return t;
                     };
-                    if (fm.tags) {
-                        if (Array.isArray(fm.tags)) {
-                            const newTags = fm.tags.map(processSingleTag);
-                            if (newTags.some((t: string, i: number) => t !== fm.tags[i])) fm.tags = newTags;
-                        } else if (typeof fm.tags === 'string') {
-                            const newTag = processSingleTag(fm.tags);
-                            if (newTag !== fm.tags) fm.tags = newTag;
-                        }
-                    }
-                    if (fm.tag) {
-                        if (Array.isArray(fm.tag)) {
-                            const newTags = fm.tag.map(processSingleTag);
-                            if (newTags.some((t: string, i: number) => t !== fm.tag[i])) fm.tag = newTags;
-                        } else if (typeof fm.tag === 'string') {
-                            const newTag = processSingleTag(fm.tag);
-                            if (newTag !== fm.tag) fm.tag = newTag;
-                        }
-                    }
+                    applyToTagField(fm, 'tags', processSingleTag);
+                    applyToTagField(fm, 'tag', processSingleTag);
                 });
 
                 // Process inline tags (body only — frontmatter already handled above)
@@ -3843,8 +3793,8 @@ export default class TagLowercasePlugin extends Plugin {
             return;
         }
 
-        await this.app.fileManager.processFrontMatter(file, (fm) => {
-            const processSingleTag = (t: string): string => {
+        await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+            const processSingleTag = (t: unknown): unknown => {
                 if (typeof t !== 'string') return t;
                 const hasHash = t.startsWith('#');
                 const raw = hasHash ? t.substring(1) : t;
@@ -3864,24 +3814,8 @@ export default class TagLowercasePlugin extends Plugin {
             };
 
             // Issue 8: Idempotency check
-            if (fm.tags) {
-                if (Array.isArray(fm.tags)) {
-                    const newTags = fm.tags.map(processSingleTag);
-                    if (newTags.some((t: string, i: number) => t !== fm.tags[i])) fm.tags = newTags;
-                } else if (typeof fm.tags === 'string') {
-                    const newTag = processSingleTag(fm.tags);
-                    if (newTag !== fm.tags) fm.tags = newTag;
-                }
-            }
-            if (fm.tag) {
-                if (Array.isArray(fm.tag)) {
-                    const newTags = fm.tag.map(processSingleTag);
-                    if (newTags.some((t: string, i: number) => t !== fm.tag[i])) fm.tag = newTags;
-                } else if (typeof fm.tag === 'string') {
-                    const newTag = processSingleTag(fm.tag);
-                    if (newTag !== fm.tag) fm.tag = newTag;
-                }
-            }
+            applyToTagField(fm, 'tags', processSingleTag);
+            applyToTagField(fm, 'tag', processSingleTag);
         });
 
         await this.app.vault.process(file, (data) => {
@@ -3909,8 +3843,8 @@ export default class TagLowercasePlugin extends Plugin {
     // Issue 1: Accept overrides instead of mutating settings
     async processFile(file: TFile, overrides?: { caseStrategy?: 'lowercase' | 'uppercase' | 'none' }): Promise<string> {
         let finalContent = '';
-        await this.app.fileManager.processFrontMatter(file, (fm) => {
-            const processSingleTag = (t: string): string => {
+        await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+            const processSingleTag = (t: unknown): unknown => {
                 if (typeof t !== 'string') return t;
                 const hasHash = t.startsWith('#');
                 const clean = hasHash ? t.substring(1) : t;
@@ -3920,28 +3854,8 @@ export default class TagLowercasePlugin extends Plugin {
             };
 
             // Issue 8: Only assign back if something actually changed
-            if (fm.tags) {
-                if (Array.isArray(fm.tags)) {
-                    const newTags = fm.tags.map(processSingleTag);
-                    if (newTags.some((t: string, i: number) => t !== fm.tags[i])) {
-                        fm.tags = newTags;
-                    }
-                } else if (typeof fm.tags === 'string') {
-                    const newTag = processSingleTag(fm.tags);
-                    if (newTag !== fm.tags) fm.tags = newTag;
-                }
-            }
-            if (fm.tag) {
-                if (Array.isArray(fm.tag)) {
-                    const newTags = fm.tag.map(processSingleTag);
-                    if (newTags.some((t: string, i: number) => t !== fm.tag[i])) {
-                        fm.tag = newTags;
-                    }
-                } else if (typeof fm.tag === 'string') {
-                    const newTag = processSingleTag(fm.tag);
-                    if (newTag !== fm.tag) fm.tag = newTag;
-                }
-            }
+            applyToTagField(fm, 'tags', processSingleTag);
+            applyToTagField(fm, 'tag', processSingleTag);
         });
 
         await this.app.vault.process(file, (data) => {
@@ -4698,7 +4612,7 @@ class InvalidTagsModal extends Modal {
                             const newValue = input.getValue();
                             const file = this.app.vault.getAbstractFileByPath(item.path);
                             if (file instanceof TFile) {
-                                await this.app.fileManager.processFrontMatter(file, (fm) => {
+                                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                                     const updateOne = (key: string) => {
                                         if (fm[key]) {
                                             if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
@@ -4727,7 +4641,7 @@ class InvalidTagsModal extends Modal {
                         runAsync(async () => {
                             const file = this.app.vault.getAbstractFileByPath(item.path);
                             if (file instanceof TFile) {
-                                await this.app.fileManager.processFrontMatter(file, (fm) => {
+                                await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
                                     const removeOne = (key: string) => {
                                         if (fm[key]) {
                                             if (typeof fm[key] === 'string' && fm[key] === issue.tag) {
