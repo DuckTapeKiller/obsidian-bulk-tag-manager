@@ -761,18 +761,21 @@ body button.btm-icon-btn {
    Every value here comes from Obsidian's own modal variables, so a theme that
    resizes modals resizes these too. */
 
+/* Obsidian already gives .modal a sensible default width, so the plugin does not set
+   one. What it must not do is cap the *content* narrower than the dialog: that left a
+   400px column inside a 560px modal, with the list's scrollbar stranded 160px short of
+   the edge. Height is capped to the viewport so a long list scrolls inside the dialog
+   instead of pushing the heading and buttons off the top of the screen. */
 .btm-modal-narrow,
 .btm-modal-wide {
-    width: var(--modal-width);
-    max-height: var(--modal-max-height);
+    max-height: var(--modal-height);
 }
 
-.btm-modal-narrow {
-    max-width: var(--modal-max-width-narrow);
-}
-
+/* Only the genuinely wide dialogs -- dashboard, preview, error report, hierarchy --
+   opt out of the default width, and they stay well inside the narrow cap. */
 .btm-modal-wide {
-    max-width: var(--modal-max-width);
+    width: var(--modal-width);
+    max-width: var(--modal-max-width-narrow);
 }
 
 /* The content column fills the dialog, and only the long region inside it scrolls,
