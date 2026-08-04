@@ -4070,6 +4070,7 @@ class ProgressModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-progress-modal');
 
         new Setting(contentEl).setName('Processing...').setHeading();
@@ -4114,6 +4115,7 @@ class PreviewModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-wide');
         contentEl.addClass('btm-preview-modal');
 
         new Setting(contentEl).setName('Preview changes').setHeading();
@@ -4196,6 +4198,7 @@ class HistoryModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-history-modal');
 
         new Setting(contentEl).setName('Operation history').setHeading();
@@ -4312,6 +4315,7 @@ class TagHierarchyModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-wide');
         contentEl.addClass('btm-hierarchy-modal');
 
         new Setting(contentEl).setName('Nested tags').setHeading();
@@ -4645,6 +4649,7 @@ class InvalidTagsModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-wide');
         contentEl.addClass('btm-invalid-modal');
 
         new Setting(contentEl)
@@ -4793,6 +4798,7 @@ class EmptyTagsModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-invalid-modal'); // Reuse styles
 
         new Setting(contentEl)
@@ -4844,6 +4850,7 @@ class InlineTagsModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-invalid-modal');
 
         new Setting(contentEl)
@@ -4899,6 +4906,7 @@ class NestedFilesModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-invalid-modal');
 
         new Setting(contentEl)
@@ -4957,6 +4965,7 @@ class TagListModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-tag-list-modal');
 
         new Setting(contentEl).setName(this.title).setDesc(`${this.tags.length} tags found`).setHeading();
@@ -5003,6 +5012,7 @@ class SimpleFileListModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-file-list-modal');
 
         new Setting(contentEl).setName(this.title).setDesc(`${this.files.length} files found`).setHeading();
@@ -5115,6 +5125,7 @@ class OrphanTagsModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-orphan-modal');
 
         new Setting(contentEl)
@@ -5214,6 +5225,7 @@ class MultiTagSelectModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-multiselect-modal');
 
         new Setting(contentEl).setName('Select tags to merge').setHeading();
@@ -5311,6 +5323,7 @@ class FolderSelectModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
         contentEl.addClass('btm-folder-modal');
 
         new Setting(contentEl).setName('Select folders').setHeading();
@@ -5555,6 +5568,7 @@ class TagRenamePromptModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
 
         new Setting(contentEl).setName(`Rename #${this.tagName}`).setHeading();
         const input = new TextComponent(contentEl).setValue(this.tagName).setPlaceholder('new-tag-name');
@@ -5599,6 +5613,7 @@ class TagPageCreateModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-narrow');
 
         new Setting(contentEl).setName('Create tag page').setHeading();
         contentEl.createEl('p', { text: `A tag page for #${this.tagName} does not exist.` });
@@ -6698,6 +6713,7 @@ class TagManagerModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
+        this.modalEl.addClass('btm-modal-wide');
         contentEl.addClass('btm-dashboard');
 
         new Setting(contentEl).setName('Bulk Tag Manager').setHeading();

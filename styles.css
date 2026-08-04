@@ -5,7 +5,11 @@
     max-width: 650px;
 }
 
-.btm-settings-page .btm-dashboard {
+/* The dashboard fills whatever container it is placed in. Left at its own max-width it
+   would sit as a narrow column inside a wider dialog -- the same mismatch that stranded
+   list scrollbars mid-modal. */
+.btm-settings-page .btm-dashboard,
+.btm-modal-wide .btm-dashboard {
     max-width: none;
     width: 100%;
 }
@@ -95,13 +99,9 @@
 }
 
 /* Invalid Tags Modal */
-.btm-invalid-modal {
-    max-width: 600px;
-    max-height: 80vh;
-}
-
 .btm-invalid-list {
-    max-height: 400px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
 }
 
@@ -293,18 +293,14 @@ body button.btm-icon-btn {
 }
 
 /* Preview Modal */
-.btm-preview-modal {
-    max-width: 700px;
-    max-height: 80vh;
-}
-
 .btm-preview-warning {
     color: var(--text-warning);
     font-size: var(--font-ui-smaller);
 }
 
 .btm-preview-list {
-    max-height: 400px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     margin: 16px 0;
 }
@@ -371,10 +367,6 @@ body button.btm-icon-btn {
 }
 
 /* History Modal */
-.btm-history-modal {
-    max-width: 500px;
-}
-
 .btm-history-clarification {
     color: var(--text-muted);
 }
@@ -384,7 +376,8 @@ body button.btm-icon-btn {
 }
 
 .btm-history-list {
-    max-height: 400px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
 }
 
@@ -424,13 +417,9 @@ body button.btm-icon-btn {
     margin-top: 8px;
 }
 
-.btm-modal-wide {
-    width: 80vw;
-    max-width: 800px;
-}
-
 .btm-file-list {
-    max-height: 60vh;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     margin-top: 20px;
 }
@@ -475,13 +464,9 @@ body button.btm-icon-btn {
 }
 
 /* Hierarchy Modal */
-.btm-hierarchy-modal {
-    max-width: 500px;
-    max-height: 80vh;
-}
-
 .btm-tree {
-    max-height: 500px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
 }
 
@@ -549,12 +534,9 @@ body button.btm-icon-btn {
 }
 
 /* Orphan Modal */
-.btm-orphan-modal {
-    max-width: 400px;
-}
-
 .btm-orphan-list {
-    max-height: 400px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
 }
 
@@ -607,7 +589,8 @@ body button.btm-icon-btn {
 }
 
 .btm-tree-container {
-    max-height: 500px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     border: 1px solid var(--background-modifier-border);
     border-radius: 4px;
@@ -645,11 +628,6 @@ body button.btm-icon-btn {
 }
 
 /* Multi-Select Modal */
-.btm-multiselect-modal {
-    max-width: 500px;
-    max-height: 80vh;
-}
-
 .btm-search-container {
     margin-bottom: 12px;
 }
@@ -672,7 +650,8 @@ body button.btm-icon-btn {
 }
 
 .btm-tag-list {
-    max-height: 300px;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     border: 1px solid var(--background-modifier-border);
     border-radius: 6px;
@@ -705,11 +684,6 @@ body button.btm-icon-btn {
 }
 
 /* Folder Modal */
-.btm-folder-modal {
-    max-width: 500px;
-    max-height: 80vh;
-}
-
 .btm-folder-name {
     font-weight: 500;
     flex: 1;
@@ -777,6 +751,44 @@ body button.btm-icon-btn {
 
 .btm-progress-high {
     background: var(--color-green);
+}
+
+/* --- Modal sizing ---------------------------------------------------------
+   A modal's size belongs on the modal element. Putting max-width on the content
+   instead leaves a full-width dialog with a narrow column inside it, which is what
+   left long lists scrolling against a scrollbar stranded mid-dialog.
+
+   Every value here comes from Obsidian's own modal variables, so a theme that
+   resizes modals resizes these too. */
+
+.btm-modal-narrow,
+.btm-modal-wide {
+    width: var(--modal-width);
+    max-height: var(--modal-max-height);
+}
+
+.btm-modal-narrow {
+    max-width: var(--modal-max-width-narrow);
+}
+
+.btm-modal-wide {
+    max-width: var(--modal-max-width);
+}
+
+/* The content column fills the dialog, and only the long region inside it scrolls,
+   so headings and action buttons stay put instead of scrolling away. */
+.btm-modal-narrow .modal-content,
+.btm-modal-wide .modal-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    width: 100%;
+}
+
+.btm-scroll-region {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 /* Modal Polish */
@@ -914,9 +926,8 @@ body .btm-metric-box a.btm-stat-link {
 }
 
 .modal.btm-confirmation-modal-window {
-    width: 360px;
-    min-width: 360px;
-    max-width: 90vw;
+    width: var(--modal-width);
+    max-width: var(--modal-max-width-narrow);
     height: fit-content;
 }
 
