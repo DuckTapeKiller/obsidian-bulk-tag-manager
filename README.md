@@ -1,5 +1,7 @@
 # Bulk Tag Manager
 
+<a href="https://community.obsidian.md/plugins/bulk-tag-manager"><img alt="Get it on Obsidian" src="assets/get-it-on-obsidian.svg"></a>
+
 ![Bulk Tag Manager Art](https://github.com/user-attachments/assets/bc234f8a-a52c-41d7-a563-0c4676600dc7)
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ducktapekiller)
