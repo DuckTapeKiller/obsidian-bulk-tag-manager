@@ -296,6 +296,7 @@ Holding **Ctrl/Cmd + Click** on any tag in the editor or reading view opens its 
 
 - Click the **Tags icon** in the left ribbon for quick single-tag actions (rename, delete, search, tag page, random note).
 - Use **Settings > Bulk Tag Manager** for bulk operations, vault-wide cleanup, statistics, and advanced tools.
+- The last section of those settings, **Support**, has the Ko-fi link from the top of this page, a link to report a bug or suggest an idea in the [issues](https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/issues), and the installed version.
 - Right-click any tag in the tag pane, editor, or reading view for contextual actions.
 - Use the Command Palette for direct access to common operations.
 

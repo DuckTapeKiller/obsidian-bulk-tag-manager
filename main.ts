@@ -181,6 +181,9 @@ const DEFAULT_SETTINGS: TagLowercaseSettings = {
 };
 
 // Improved regex that skips code blocks
+const KOFI_URL = 'https://ko-fi.com/ducktapekiller';
+const ISSUES_URL = 'https://github.com/DuckTapeKiller/obsidian-bulk-tag-manager/issues';
+
 const TAG_REGEX = /(^|\s)(#[\p{L}\p{N}_/-]+)/gu;
 const TAG_HOVER_SOURCE = 'bulk-tag-manager:tag-pane';
 
@@ -7927,6 +7930,38 @@ class TagLowercaseSettingTab extends PluginSettingTab {
         );
 
         this.renderHistoryUsage(usageSetting);
+
+        const supportSection = containerEl.createDiv({ cls: 'btm-section-box' });
+        new Setting(supportSection).setName('Support').setHeading();
+        this.renderSupportCard(supportSection);
+        new Setting(supportSection)
+            .setName('Report a bug or suggest an idea')
+            .setDesc('Open an issue on GitHub.')
+            .controlEl.createEl('a', { cls: 'btm-support-link', text: 'Open issues', href: ISSUES_URL });
+        new Setting(supportSection)
+            .setName('Version')
+            .setDesc(`${this.plugin.manifest.name} ${this.plugin.manifest.version}`);
+    }
+
+    /** The Ko-fi card at the top of the Support section. */
+    private renderSupportCard(container: HTMLElement) {
+        const pluginName = this.plugin.manifest.name;
+        const card = container.createDiv({ cls: 'btm-support' });
+        setIcon(card.createDiv({ cls: 'btm-support-icon' }), 'heart');
+        card.createDiv({ cls: 'btm-support-title', text: `Enjoying ${pluginName}?` });
+        const about = card.createEl('p', {
+            text: `${pluginName} is free and open source, made and maintained by DuckTapeKiller. If it is useful to you, you can support its development on `
+        });
+        // The name is kept on one line, so a narrow screen never breaks it at its hyphen.
+        about.createSpan({ cls: 'btm-support-nowrap', text: 'Ko-fi' });
+        about.appendText('.');
+        const kofi = card.createEl('a', {
+            cls: 'btm-support-button',
+            href: KOFI_URL,
+            attr: { 'aria-label': 'Support DuckTapeKiller on Ko-fi' }
+        });
+        setIcon(kofi.createSpan({ cls: 'btm-support-button-icon' }), 'coffee');
+        kofi.createSpan({ text: 'Support on Ko-fi' });
     }
 
     /** Show what the snapshot store is currently using, against the configured budget. */

@@ -1,6 +1,6 @@
 {
     "name": "bulk-tag-manager",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "description": "Bulk convert all tags in your vault to lowercase, verify stats, and generate tag lists.",
     "main": "main.js",
     "scripts": {
@@ -26,7 +26,7 @@
         "esbuild": "^0.24.2",
         "eslint": "^9.39.2",
         "eslint-config-prettier": "^10.1.8",
-        "eslint-plugin-obsidianmd": "^0.4.1",
+        "eslint-plugin-obsidianmd": "^0.5.1",
         "globals": "^17.0.0",
         "obsidian": "^1.7.2",
         "prettier": "^3.8.4",

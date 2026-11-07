@@ -1066,3 +1066,95 @@ body .btm-metric-box a.btm-stat-link {
     font-size: 11px;
     margin-top: 4px;
 }
+
+/* Settings: Support section. The Ko-fi card sits inside a section box, which has the
+   secondary background, so the card takes the primary one. Everything reads Obsidian's
+   theme variables, so the card follows the theme, light or dark. */
+.btm-support {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--size-4-2);
+    margin: 0 0 var(--size-4-2);
+    padding: var(--size-4-6) var(--size-4-4);
+    border: var(--border-width) solid var(--background-modifier-border);
+    border-radius: var(--radius-l);
+    background-color: var(--background-primary);
+    text-align: center;
+}
+
+.btm-support-icon {
+    display: inline-flex;
+    color: var(--color-red);
+}
+
+.btm-support-icon svg {
+    width: var(--icon-xl);
+    height: var(--icon-xl);
+    fill: currentColor;
+}
+
+.btm-support-title {
+    font-size: var(--font-ui-large);
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+}
+
+.btm-settings-page .btm-support p {
+    max-width: 34em;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+    line-height: var(--line-height-normal);
+}
+
+.btm-support-nowrap {
+    white-space: nowrap;
+}
+
+.btm-support-button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--size-4-2);
+    margin-top: var(--size-4-2);
+    padding: var(--size-4-2) var(--size-4-4);
+    border-radius: var(--radius-m);
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    font-weight: var(--font-semibold);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.btm-support-button:hover {
+    background-color: var(--interactive-accent-hover);
+    color: var(--text-on-accent);
+}
+
+.btm-support-button-icon {
+    display: inline-flex;
+}
+
+.btm-support-button-icon svg {
+    width: var(--icon-s);
+    height: var(--icon-s);
+}
+
+/* The issues link looks like Obsidian's own buttons in a settings row. */
+.btm-support-link {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--size-4-1) var(--size-4-3);
+    border-radius: var(--button-radius);
+    background-color: var(--interactive-normal);
+    box-shadow: var(--input-shadow);
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.btm-support-link:hover {
+    background-color: var(--interactive-hover);
+    color: var(--text-normal);
+}
